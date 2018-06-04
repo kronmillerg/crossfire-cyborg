@@ -1,0 +1,6 @@
+# Compiled Python files.
+*.py[cod]
+
+# vim .swp files, so I don't accidentally add them with a "git add ."
+.sw[nop]
+.*.sw[op]
