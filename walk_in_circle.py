@@ -7,6 +7,8 @@ import client_interfacer
 
 cf = client_interfacer.ClientInterfacer()
 
+MAX_ITERS = 20
+
 count = 0
 done = False
 while not done:
@@ -17,16 +19,15 @@ while not done:
     while cf.hasInput():
         if cf.getNextInput().startswith("scripttell"):
             done = True
-            cf._sendToConsole("Closing down; just need to wait for pending "
-                "commands.")
+            cf.draw("Closing down; just need to wait for pending commands.")
     count += 1
-    if count > 100:
+    if count > MAX_ITERS:
         # If there's a bug, try not to totally crash the client by flooding it
         # with too much stuff.
-        cf._sendToConsole("Count maxed out; stopping.")
+        cf.draw("Count maxed out; stopping.")
         done = True
 
 cf.dropAllQueuedCommands()
-cf.execAllPendingCommands()
-cf._sendToConsole("Okay, all done.")
+cf.flushCommands()
+cf.draw("Okay, all done.")
 

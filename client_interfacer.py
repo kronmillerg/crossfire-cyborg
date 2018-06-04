@@ -1,33 +1,3 @@
-# TODO
-#
-# Okay, lemme rethink the public API here.
-# Things that scripts will need to do:
-#   - Draw text
-#   - Send a command...
-#       - ...and return immediately.
-#       - ...and wait until it's dispatched (for pacing).
-#       - ...and wait until it's finished.
-#   - Query state of commands:
-#       - Are there any queued?
-#       - Are there any pending?
-#       - Are we at maxPendingCommands?
-#   - Wait for previous commands:
-#       - Wait until queue is empty
-#       - Wait until all are done (flush)
-#       - Not sure about these:
-#           - Wait until at least one more is dispatched
-#           - Wait until at least one more is completed
-#   - Other waiting:
-#       - Wait for <some particular type of input>
-#       - Wait until anything happens (idle)
-#
-# Also, should probably establish a convention for who pulls from the queue.
-# When is it allowed that:
-#     numPendingCommands < maxPendingCommands and len(commandQueue) == 0
-# ? Can we just say this is never true outside of a call to a method?
-
-
-
 import collections
 import platform
 import select
@@ -57,6 +27,11 @@ class Color:
     # black. I imagine the above is all the colors recognized, but I don't know
     # how robust that conclusion is (or even whether the above colors can be
     # depended on in the long-term).
+    #
+    # Oh, also, I get this rather telling error message in the console:
+    #     [EE] (info.c::draw_ext_info) Passed invalid color from server: 14,
+    #     max allowed is 13
+    # So I think that settles that.
     #
     # Interestingly, on that client, color=0 renders in the same information
     # window as the rest, but it's plain black whereas color=1 is bold black.
@@ -108,6 +83,11 @@ class ClientInterfacer(object):
         # because there's no point. We just keep a count of how many commands
         # are pending so that we can do things like "send more commands up to
         # maxPendingCommands" or "wait until all pending commands are done".
+        #
+        # INVARIANT: On entry/exit from all public API calls, there are no
+        # queuedCommands unless we're maxed out on pending commands. That is:
+        #     self.numPendingCommands >= self.maxPendingCommands or \
+        #         len(self.commandQueue) == 0
         self.commandQueue = collections.deque()
         self.numPendingCommands = 0
         self.maxPendingCommands = maxPendingCommands
@@ -115,12 +95,9 @@ class ClientInterfacer(object):
         self.pendingInputs = collections.deque()
 
     ########################################################################
-    # Command execution
+    # Issuing commands to the player
 
-    # Allow changing this dynamically because sometimes you want one part of a
-    # script to be careful and another part to be fast.
-    def setMaxPendingCommands(self, maxPendingCommands):
-        self.maxPendingCommands = maxPendingCommands
+    ### Execute a command ###
 
     # The following three methods start a new command through the command
     # pipeline and wait (respectively) until it is at least (1) queued, (2)
@@ -132,113 +109,132 @@ class ClientInterfacer(object):
 
     def queueCommand(self, command, count=DEFAULT_COUNT):
         """
-        Issue a command, or add it to the queue if we're already at
-        maxPendingCommands. Return immediately.
+        Add a new command to the queue. If we're not already at
+        maxPendingCommands, issue commands from the queue until either we are
+        at maxPendingCommands or the queue is empty. Return immediately.
 
         If you are not moving items, count can be omitted. If you are moving
         items, then count must be specified: 0 to move all matching items, or
         else the number of items to move.
         """
 
-        self.issueCommandsFromQueue()
+        self._checkInvariants()
 
-        encoded = self._encodeCommand(command, count)
-        if self.numPendingCommands >= self.maxPendingCommands:
-            self.commandQueue.append(encoded)
-        else:
-            # We just called issueCommandsFromQueue, which means one of:
-            #     len(self.commandQueue) == 0
-            #     self.numPendingCommands >= self.maxPendingCommands
-            # must be true. Since we just ruled out the first one, the queue
-            # must be empty, so it's safe to bypass the queue and just send the
-            # command directly.
-            self._sendCommand(encoded)
+        self.commandQueue.append(self._encodeCommand(command, count))
+        self._pumpQueue()
 
-    def issueCommand(self, command, count=DEFAULT_COUNT):
+        self._checkInvariants()
+
+    def issueCommand(self, command, count=DEFAULT_COUNT, maxQueueSize=0):
         """
         Same as queueCommand, but block until the command has actually been
         submitted to the server (which may require some commands ahead of it to
         be fully executed).
+
+        If maxQueueSize is specified, instead block until the queue size is at
+        most maxQueueSize.
         """
+        # TODO: Specifying a maxQueueSize > 0 might be useful if you're doing a
+        # nontrivial calculation between issueCommands and you want to make
+        # sure you're keeping the client busy, except in that case you'd want
+        # to make sure you're regularly allowing the ClientInterfacer to handle
+        # available inputs (without possibly blocking for more), which
+        # currently isn't possible....
 
-        # Empty the queue, then wait until we're below maxPendingCommands.
-        self.issueAllQueuedCommands()
-        # Note: this is "while" instead of "if" in case the user recently
-        # called setMaxPendingCommands to decrease maxPendingCommands.
-        while self.numPendingCommands >= self.maxPendingCommands:
-            self._waitUntilNextCommandFinishes()
+        self._checkInvariants()
 
-        # The queue is empty and numPendingCommands < maxPendingCommands.
-        assert not self.commandQueue
-        assert self.numPendingCommands < self.maxPendingCommands
-        # Therefore, it is safe to bypass the queue and send this command to
-        # the client directly.
-        self._sendCommand(self._encodeCommand(command, count))
+        self.queueCommand(command, count=count)
+        self.issueQueuedCommands(maxQueueSize=maxQueueSize)
+
+        self._checkInvariants()
 
     def execCommand(self, command, count=DEFAULT_COUNT):
         """
-        Same as issueCommand, but block until the command has been fully
+        Same as queueCommand, but block until the command has been fully
         executed (that is, until the server has confirmed that it's done).
         """
 
+        self._checkInvariants()
+
         self.queueCommand(command, count=count)
-        self.execAllPendingCommands()
+        self.flushCommands()
+
+        self._checkInvariants()
+
+    ### Flush queued/pending commands ###
+
+    def issueQueuedCommands(self, maxQueueSize=0):
+        """
+        Block until the command queue has at most maxQueueSize commands in it
+        (because all others have been dispatched to the server). Note that
+        maxQueueSize is in addition to any pending commands.
+
+        Note that if you intend to handle any inputs of your own, you probably
+        want to use idle() instead of this function, since this function will
+        allow arbitrarily many unhandled inputs of other types to build up
+        while it's waiting for commands to resolve.
+
+        Postcondition: len(self.commandQueue) <= maxQueueSize
+        """
+
+        self._checkInvariants()
+
+        self._idleUntil(lambda: len(self.commandQueue) <= maxQueueSize)
+
+        assert len(self.commandQueue) <= maxQueueSize
+        self._checkInvariants()
 
     def flushCommands(self):
         """
-        Equivalent to self.execAllPendingCommands().
-        """
-
-        self.execAllPendingCommands()
-
-    def execAllPendingCommands(self):
-        """
         Block until all queued commands have been fully executed.
+
+        As with issueQueuedCommands, if you intend to handle any inputs of your
+        own, you probably want to use idle() instead of this function.
 
         Postcondition:
             len(self.commandQueue) == 0 and self.numPendingCommands == 0
         """
 
-        # First wait until everything in the queue has been dispatched, then
-        # wait until everything dispatched has been completed.
-        self.issueAllQueuedCommands()
-        while self.numPendingCommands > 0:
-            self._waitUntilNextCommandFinishes()
+        self._checkInvariants()
+
+        self._idleUntil(lambda: len(self.commandQueue) == 0 and \
+            self.numPendingCommands == 0)
 
         assert len(self.commandQueue) == 0 and self.numPendingCommands == 0
+        self._checkInvariants()
 
-    def issueAllQueuedCommands(self):
+    ### Check how many commands are in the pipeline ###
+
+    def hasAnyPendingCommands(self):
+        self._checkInvariants()
+        return self.numPendingCommands > 0
+
+    def hasMaxPendingCommands(self):
+        self._checkInvariants()
+        return self.numPendingCommands >= self.maxPendingCommands
+
+    def numQueuedCommands(self):
+        self._checkInvariants()
+        return len(self.commandQueue)
+
+    ### Other misc. related to issuing commands ###
+
+    # Allow changing this dynamically because sometimes you want one part of a
+    # script to be careful and another part to be fast.
+    def setMaxPendingCommands(self, maxPendingCommands):
         """
-        Block until all commands in the command queue (if any) have been
-        dispatched to the server.
-
-        Postcondition: len(self.commandQueue) == 0
+        Change the number of commands that may be pending on the server before
+        we start putting commands in the queue. Increasing this value will
+        cause the oldest few commands from the queue to be sent to the server
+        immediately.
         """
 
-        while self.commandQueue:
-            self.issueCommandsFromQueue()
-            if self.commandQueue:
-                self._waitUntilNextCommandFinishes()
+        self._checkInvariants()
 
-        assert len(self.commandQueue) == 0
+        self.maxPendingCommands = maxPendingCommands
+        self._pumpQueue()
 
-    def issueCommandsFromQueue(self):
-        """
-        Immediately send to the server the next few commands from the command
-        queue, until either the queue is empty or there are maxPendingCommands
-        pending commands.
-
-        Postcondition:
-            len(self.commandQueue) == 0 or \\
-                self.numPendingCommands >= self.maxPendingCommands
-        """
-
-        while self.commandQueue and \
-                self.numPendingCommands < self.maxPendingCommands:
-            self._sendCommand(self.commandQueue.popleft())
-
-        assert len(self.commandQueue) == 0 or \
-            self.numPendingCommands >= self.maxPendingCommands
+        self._checkInvariants()
 
     def dropAllQueuedCommands(self):
         """
@@ -250,23 +246,46 @@ class ClientInterfacer(object):
         recover.
         """
 
+        self._checkInvariants()
         self.commandQueue.clear()
+        self._checkInvariants()
 
-    def _waitUntilNextCommandFinishes(self):
-        """
-        Block until at least one pending command is finished executing. If
-        there are no pending commands, return immediately, regardless of what's
-        in the command queue.
-        """
-        
-        if self.numPendingCommands <= 0:
-            return
+    ########################################################################
+    # Internal helpers -- issuing commands
 
-        oldNumPendingCommands = self.numPendingCommands
-        while self.numPendingCommands >= oldNumPendingCommands:
-            self.handlePendingClientInputs()
-            if self.numPendingCommands >= oldNumPendingCommands:
-                self._waitForClientInput()
+    def _idleUntil(self, pred):
+        """
+        Idle until pred() is satisfied. This is internal-only because in
+        practice the pred() has to be based on internal state of the
+        ClientInterfacer for this to be useful. (At least I can't think of any
+        way that wouldn't be true.) Nevertheless, the invariants must be
+        satisfied upon entering this function, for the sake of self.idle();
+        this means that pred() can also depend on the invariants to hold.
+        """
+
+        self._checkInvariants()
+        while not pred():
+            self.idle()
+            self._checkInvariants()
+
+    def _pumpQueue(self):
+        """
+        Immediately send to the server the next few commands from the command
+        queue, until either the queue is empty or there are maxPendingCommands
+        pending commands.
+
+        This method is called internally by some other methods to restore the
+        following invariant:
+            self.numPendingCommands >= self.maxPendingCommands or \
+                len(self.commandQueue) == 0
+        """
+
+        while self.commandQueue and \
+                self.numPendingCommands < self.maxPendingCommands:
+            self._sendCommand(self.commandQueue.popleft())
+
+        assert self.numPendingCommands >= self.maxPendingCommands or \
+            len(self.commandQueue) == 0
 
     def _sendCommand(self, encodedCommand):
         self._sendToClient(encodedCommand)
@@ -275,9 +294,35 @@ class ClientInterfacer(object):
     def _encodeCommand(self, command, count):
         return "issue %s 1 %s" % (count, command)
 
-    ########################################################################
-    # Handling inputs
+    def _checkInvariants(self):
+        assert self.numPendingCommands >= self.maxPendingCommands or \
+            len(self.commandQueue) == 0
 
+    ########################################################################
+    # Handling inputs from the client
+
+    def idle(self):
+        """
+        Wait until something happens. More precisely, wait until we receive
+        some sort of message from the client. The message could be of any sort.
+        For example, it might be an acknowledgement that one of the pending
+        commands was completed, or it might be information on the player stats
+        from a previous "watch stat hp", or it might be a "scripttell" message
+        from the player.
+
+        Most scripts will want to call this function somewhere in their main
+        loop, to avoid busy-waiting.
+        """
+
+        self._checkInvariants()
+        self._waitForClientInput()
+        self._handlePendingClientInputs()
+        self._checkInvariants()
+
+    # TODO: These next two functions are going to be changed as we start to
+    # recognize specific types of client input. Rename them and note that if
+    # you use them you won't be forward-compatible. Also add the
+    # scripttell-specific variants, which are presumably going to stick around.
     def hasInput(self):
         """
         Return true if there is unhandled input from the client.
@@ -290,7 +335,7 @@ class ClientInterfacer(object):
             return True
 
         # Otherwise, we need to check what's on stdin to determine the answer.
-        self.handlePendingClientInputs()
+        self._handlePendingClientInputs()
         return len(self.pendingInputs) > 0
 
     def getNextInput(self):
@@ -300,14 +345,17 @@ class ClientInterfacer(object):
 
         # Else, need to wait for input.
         while not self.pendingInputs:
-            self.handlePendingClientInputs()
+            self._handlePendingClientInputs()
             if not self.pendingInputs:
                 self._waitForClientInput()
 
         assert len(self.pendingInputs) > 0
         return self.pendingInputs.popleft()
 
-    def handlePendingClientInputs(self):
+    ########################################################################
+    # Internal helpers -- handling client input
+
+    def _handlePendingClientInputs(self):
         while self._checkForClientInput():
             self._handleClientInput(self._readLineFromClient())
 
@@ -315,6 +363,7 @@ class ClientInterfacer(object):
         if msg.startswith("watch comc"):
             if self.numPendingCommands > 0:
                 self.numPendingCommands -= 1
+                self._pumpQueue()
             # if self.numPendingCommands == 0, then just swallow the message.
             # This can happen if the player executes some commands while we're
             # trying to drive (perhaps while the script is idle). There's no
@@ -323,7 +372,7 @@ class ClientInterfacer(object):
             self.pendingInputs.append(msg)
 
     ########################################################################
-    # Drawing information to the screen.
+    # Drawing information to the screen
 
     def draw(self, msg, color=Color.DEFAULT, lowerPanel=False, console=False):
         """
