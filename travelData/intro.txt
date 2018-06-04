@@ -1,0 +1,4 @@
+Hello, and welcome to the traveler's helper script.
+Note: by convention, cities' locations are defined to be
+right on the signs immediately outside of them.
+I'll say more here later. For now, figure it out yourself.

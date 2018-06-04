@@ -135,7 +135,7 @@ class ClientInterfacer(object):
         most maxQueueSize.
         """
         # TODO: Specifying a maxQueueSize > 0 might be useful if you're doing a
-        # nontrivial calculation between issueCommands and you want to make
+        # nontrivial calculation between issueCommand()s and you want to make
         # sure you're keeping the client busy, except in that case you'd want
         # to make sure you're regularly allowing the ClientInterfacer to handle
         # available inputs (without possibly blocking for more), which
@@ -388,13 +388,27 @@ class ClientInterfacer(object):
         """
 
         if console:
-            self._sendToConsole(msg)
+            self.debugOut(msg)
             return
 
         if lowerPanel:
             # For the client this is just another color code.
             color = 0
         self._sendToClient("draw %s %s" % (color, msg))
+
+    def fatal(self, msg):
+        """
+        Print a fatal error message then exit.
+        """
+
+        self.draw(msg, color=Color.RED)
+        sys.exit()
+
+    # Provide a public API function for outputting to the console so that other
+    # modules can do this. Note that this method outputs the string passed in
+    # regardless of whether DEBUG is set.
+    def debugOut(self, msg):
+        self._sendToConsole(msg)
 
     ########################################################################
     # Internal helpers -- direct client access
