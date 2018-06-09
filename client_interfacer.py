@@ -139,14 +139,12 @@ class ClientInterfacer(object):
         be fully executed).
 
         If maxQueueSize is specified, instead block until the queue size is at
-        most maxQueueSize.
+        most maxQueueSize. Specifying a maxQueueSize > 0 might be useful if
+        you're doing a nontrivial calculation between issueCommand()s and you
+        want to make sure you're keeping the client busy. For that to work,
+        note that you'll need to regularly give the client a chance to actually
+        send commands from the queue, by calling pumpEvents().
         """
-        # TODO: Specifying a maxQueueSize > 0 might be useful if you're doing a
-        # nontrivial calculation between issueCommand()s and you want to make
-        # sure you're keeping the client busy, except in that case you'd want
-        # to make sure you're regularly allowing the ClientInterfacer to handle
-        # available inputs (without possibly blocking for more), which
-        # currently isn't possible....
 
         self._checkInvariants()
 
@@ -306,16 +304,18 @@ class ClientInterfacer(object):
             len(self.commandQueue) == 0
 
     ########################################################################
-    # Handling inputs from the client
+    # Yielding control to the client interfacer.
 
     def idle(self):
         """
-        Wait until something happens. More precisely, wait until we receive
-        some sort of message from the client. The message could be of any sort.
-        For example, it might be an acknowledgement that one of the pending
-        commands was completed, or it might be information on the player stats
-        from a previous "watch stat hp", or it might be a "scripttell" message
-        from the player.
+        Wait until something happens. Do internal handling for any inputs
+        received (as with pumpEvents).
+
+        More precisely, wait until we receive some sort of message from the
+        client. The message could be of any sort. For example, it might be an
+        acknowledgement that one of the pending commands was completed, or it
+        might be information on the player stats from a previous "watch stat
+        hp", or it might be a "scripttell" message from the player.
 
         Most scripts will want to call this function somewhere in their main
         loop, to avoid busy-waiting.
@@ -325,6 +325,30 @@ class ClientInterfacer(object):
         self._waitForClientInput()
         self._handlePendingClientInputs()
         self._checkInvariants()
+
+    def pumpEvents(self):
+        """
+        Do internal handling for any inputs received from the client. Do not
+        block.
+
+        Some examples of handling done by this function:
+          - If we're below maxPendingCommands, then commands are automatically
+            issued from the command queue to get up to maxPendingCommands (or
+            until the queue is empty).
+          - Misc internal bookkeeping that would otherwise be handled lazily.
+            You don't need to call this function for this purpose.
+        """
+        # TODO: Also updating based on 'watch stat hp' and similar.
+
+        # CLEANUP: Maybe just inline _handlePendingClientInputs here and then
+        # call this one internally? I'm not sure there's much benefit to
+        # distinguishing between the two functions.
+        self._checkInvariants()
+        self._handlePendingClientInputs()
+        self._checkInvariants()
+
+    ########################################################################
+    # Handling inputs from the client
 
     # scripttells
     def hasScripttell(self):
