@@ -13,11 +13,9 @@ while not done:
         for i in range(30):
             cf.queueCommand("use_skill meditation")
     cf.idle()
-    # TODO: hasInput/getNextInput are deprecated.
-    while cf.hasInput():
-        if cf.getNextInput().startswith("scripttell"):
-            done = True
-            cf.draw("Closing down; just need to wait for pending commands.")
+    if cf.hasScripttell():
+        done = True
+        cf.draw("Closing down; just need to wait for pending commands.")
 
 # If we have a couple dozen meditations queued, cancel them.
 cf.dropAllQueuedCommands()

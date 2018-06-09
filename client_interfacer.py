@@ -92,7 +92,14 @@ class ClientInterfacer(object):
         self.numPendingCommands = 0
         self.maxPendingCommands = maxPendingCommands
 
-        self.pendingInputs = collections.deque()
+        # Queues for particular types of inputs.
+        self.pendingScripttells = collections.deque()
+
+        # Catchall queue for inputs that aren't otherwise handled. Note that
+        # use of this queue (and the functions that access it) is not
+        # forward-compatible; inputs that currently get filed into it may later
+        # be moved to their own queues.
+        self.pendingMiscInputs = collections.deque()
 
     ########################################################################
     # Issuing commands to the player
@@ -319,41 +326,55 @@ class ClientInterfacer(object):
         self._handlePendingClientInputs()
         self._checkInvariants()
 
-    # TODO: These next two functions are going to be changed as we start to
-    # recognize specific types of client input. Rename them and note that if
-    # you use them you won't be forward-compatible. Also add the
-    # scripttell-specific variants, which are presumably going to stick around.
-    def hasInput(self):
-        """
-        Return true if there is unhandled input from the client.
-        """
+    # scripttells
+    def hasScripttell(self):
+        return self._hasInputInQueue(self.pendingScripttells)
 
+    def getNextScripttell(self):
+        return self._getNextInputFromQueue(self.pendingScripttells)
+
+    def waitForScripttell(self):
+        self._waitForInputInQueue(self.pendingScripttells)
+
+    # Misc other inputs that don't have their own handling.
+    # NOTE: Use of these next three functions is not forward-compatible! Inputs
+    # that are currently categorized as "misc inputs" may in the future be
+    # given their own queues. I'm providing these functions for completeness,
+    # but you probably shouldn't use them if you want your script to still work
+    # tomorrow.
+
+    def hasMiscInput(self):
+        return self._hasInputInQueue(self.pendingMiscInputs)
+
+    def getNextMiscInput(self):
+        return self._getNextInputFromQueue(self.pendingMiscInputs)
+
+    def waitForMiscInput(self):
+        self._waitForInputInQueue(self.pendingMiscInputs)
+
+    ########################################################################
+    # Internal helpers -- handling client input
+
+    def _hasInputInQueue(self, queue):
         # If there's something already buffered, then that's an unhandled
         # input. In this case don't check stdin, because that's needlessly
         # slow.
-        if len(self.pendingInputs) > 0:
+        if len(queue) > 0:
             return True
 
         # Otherwise, we need to check what's on stdin to determine the answer.
         self._handlePendingClientInputs()
-        return len(self.pendingInputs) > 0
+        return len(queue) > 0
 
-    def getNextInput(self):
-        if self.pendingInputs:
-            # Already have something.
-            return self.pendingInputs.popleft()
+    def _getNextInputFromQueue(self, queue):
+        self._waitForInputInQueue(queue)
+        assert len(queue) > 0
+        return queue.popleft()
 
-        # Else, need to wait for input.
-        while not self.pendingInputs:
-            self._handlePendingClientInputs()
-            if not self.pendingInputs:
-                self._waitForClientInput()
-
-        assert len(self.pendingInputs) > 0
-        return self.pendingInputs.popleft()
-
-    ########################################################################
-    # Internal helpers -- handling client input
+    def _waitForInputInQueue(self, queue):
+        # Note: queue must be a reference to a queue that actually gets updated
+        # when we _handleClientInput; otherwise this will hang.
+        self._idleUntil(lambda: len(queue) > 0)
 
     def _handlePendingClientInputs(self):
         while self._checkForClientInput():
@@ -368,8 +389,11 @@ class ClientInterfacer(object):
             # This can happen if the player executes some commands while we're
             # trying to drive (perhaps while the script is idle). There's no
             # other use for "watch comc" messages, so still don't store them.
+        elif msg.startswith("scripttell "):
+            msg = msg[len(  "scripttell "):]
+            self.pendingScripttells.append(msg)
         else:
-            self.pendingInputs.append(msg)
+            self.pendingMiscInputs.append(msg)
 
     ########################################################################
     # Drawing information to the screen

@@ -16,10 +16,9 @@ while not done:
     cf.issueCommand("east")
     cf.issueCommand("south")
     cf.issueCommand("west")
-    while cf.hasInput():
-        if cf.getNextInput().startswith("scripttell"):
-            done = True
-            cf.draw("Closing down; just need to wait for pending commands.")
+    if cf.hasScripttell():
+        done = True
+        cf.draw("Closing down; just need to wait for pending commands.")
     count += 1
     if count > MAX_ITERS:
         # If there's a bug, try not to totally crash the client by flooding it
