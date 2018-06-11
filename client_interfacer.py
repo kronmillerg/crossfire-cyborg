@@ -63,10 +63,9 @@ class ClientInterfacer(object):
         if self.__class__._numCreated > 1:
             raise RuntimeError("Cannot create more than 1 ClientInterfacer.")
 
-        # Do this preemptively because the whole infrastructure we use to issue
-        # commands depends on it.
-        # TODO: Look into using "sync" instead of "watch comc"?
-        self._sendToClient("watch comc")
+        # This one is considered part of the public API. If it needs to be
+        # calculated, I'll @property it.
+        self.playerInfo = PlayerInfo()
 
         # All of our queues are implemented using collections.deque. New
         # elements are enqueued (pushed) on the right (via append()), and the
@@ -105,7 +104,17 @@ class ClientInterfacer(object):
         # use of this queue (and the functions that access it) is not
         # forward-compatible; inputs that currently get filed into it may later
         # be moved to their own queues.
+        # TODO: Put a max length on this so it doesn't slowly fill up all
+        # available memory in long-running scripts.
+        #   - Actually, maybe do this for all the queues?
+        #   - Actually, can we just get rid of pendingMiscInputs? I don't know
+        #     of any useful reason for it to be tracked...
         self.pendingMiscInputs = collections.deque()
+
+        # Do this preemptively because the whole infrastructure we use to issue
+        # commands depends on it.
+        # TODO: Consider using "sync" instead of "watch comc"?
+        self._sendToClient("watch comc")
 
     ########################################################################
     # Issuing commands to the player
@@ -202,6 +211,7 @@ class ClientInterfacer(object):
         assert len(self.commandQueue) <= maxQueueSize
         self._checkInvariants()
 
+    # TODO: Can we just register this to run at exit / on destruction?
     def flushCommands(self):
         """
         Block until all queued commands have been fully executed.
@@ -372,6 +382,35 @@ class ClientInterfacer(object):
     ########################################################################
     # Handling inputs from the client
 
+    # Watch stats. This needs to be enabled explicitly because the messages are
+    # pretty spammy.
+    def watchStats(self, waitForInitialValues=True):
+        """
+        Start watching for changes to the player's stats. Also send out
+        requests for all of the values that will be tracked, so we can have
+        starting values.
+
+        If waitForInitialValues is True (default), then block until responses
+        come back for all of those initial requests.
+
+        If waitForInitialValues is False, then return immediately, but some
+        stats will be None until all of the requests have come back.
+        """
+
+        for requestType in self.playerInfo.getAllRequestTypes():
+            self._sendToClient("request " + requestType)
+        self._sendToClient("watch stats")
+
+        if waitForInitialValues:
+            self._idleUntil(self.playerInfo.haveAllStats)
+
+    def unwatchStats(self):
+        """
+        Stop watching for changes to the player's stats.
+        """
+
+        self._sendToClient("unwatch stats")
+
     # scripttells
     def hasScripttell(self):
         return self._hasInputInQueue(self.pendingScripttells)
@@ -427,19 +466,144 @@ class ClientInterfacer(object):
             self._handleClientInput(self._readLineFromClient())
 
     def _handleClientInput(self, msg):
+        # Do "watch comc" first, because it's the most common case in most
+        # simple scripts. Also, this way we don't have to hide the code for it
+        # in with the other "watch" handling, which is substantially different.
         if msg.startswith("watch comc"):
             if self.numPendingCommands > 0:
                 self.numPendingCommands -= 1
                 self._pumpQueue()
             # if self.numPendingCommands == 0, then just swallow the message.
             # This can happen if the player executes some commands while we're
-            # trying to drive (perhaps while the script is idle). There's no
-            # other use for "watch comc" messages, so still don't store them.
-        elif msg.startswith("scripttell "):
-            msg = msg[len(  "scripttell "):]
-            self.pendingScripttells.append(msg)
-        else:
-            self.pendingMiscInputs.append(msg)
+            # running (perhaps while the script is idle). There's no other use
+            # for "watch comc" messages, so still don't store them.
+            return
+
+        # Do watch and request next
+        isWatch, rest = checkPrefix(msg, "watch ")
+        if isWatch:
+            self._handleWatch(rest)
+            return
+        isRequest, rest = checkPrefix(msg, "request ")
+        if isRequest:
+            self._handleRequest(rest)
+            return
+
+        # Scripttells
+        isScripttell, rest = checkPrefix(msg, "scripttell ")
+        if isScripttell:
+            self.pendingScripttells.append(rest)
+            return
+
+        # If none of the code above handled it, throw it in the "misc inputs"
+        # queue.
+        self.pendingMiscInputs.append(msg)
+
+    def _handleWatch(self, msg):
+        """
+        msg has the initial "watch " stripped off, but is otherwise passed
+        through from the client.
+        """
+
+        isStats, rest = checkPrefix(msg, "stats ")
+        if isStats:
+            stat, _, value = rest.partition(" ")
+
+            # Vital stats ("request stat hp")
+            if stat == "hp":
+                self.playerInfo.hp = int(value)
+            elif stat == "maxhp":
+                self.playerInfo.maxhp = int(value)
+            elif stat == "sp":
+                self.playerInfo.sp = int(value)
+            elif stat == "maxsp":
+                self.playerInfo.maxsp = int(value)
+            elif stat == "grace":
+                self.playerInfo.grace = int(value)
+            elif stat == "maxgrace":
+                self.playerInfo.maxgrace = int(value)
+            elif stat == "food":
+                self.playerInfo.food = int(value)
+
+            # Combat stats ("request stat cmbt")
+            elif stat == "wc":
+                self.playerInfo.wc = int(value)
+            elif stat == "ac":
+                self.playerInfo.ac = int(value)
+            elif stat == "dam":
+                self.playerInfo.dam = int(value)
+            elif stat == "speed":
+                self.playerInfo.speed = int(value)
+            elif stat == "weapon_sp":
+                self.playerInfo.weapon_sp = int(value)
+
+            # Ability scores ("request stat stats")
+            elif stat == "str":
+                self.playerInfo.str = int(value)
+            elif stat == "con":
+                self.playerInfo.con = int(value)
+            elif stat == "dex":
+                self.playerInfo.dex = int(value)
+            elif stat == "int":
+                self.playerInfo.int = int(value)
+            elif stat == "wis":
+                self.playerInfo.wis = int(value)
+            elif stat == "pow":
+                self.playerInfo.pow = int(value)
+            elif stat == "cha":
+                self.playerInfo.cha = int(value)
+
+            # Intentionally no else block; there are known cases that we don't
+            # handle.
+
+        # Anything other than stats, just ignore.
+
+    def _handleRequest(self, msg):
+        """
+        msg has the initial "request " stripped off, but is otherwise passed
+        through from the client.
+        """
+
+        isVital, rest = checkPrefix(msg, "stat hp ")
+        if isVital:
+            parts = rest.split()
+            # hp maxhp sp maxsp grace maxgrace food
+            if len(parts) != 7:
+                self.logError('"request stat hp": got %d items, expected 7.' %
+                    len(parts))
+                return
+            self.playerInfo.setVitalStats(*parts)
+            return
+
+        isCombat, rest = checkPrefix(msg, "stat cmbt ")
+        if isCombat:
+            parts = rest.split()
+            # wc ac dam speed weapon_sp
+            if len(parts) != 5:
+                self.logError('"request stat cmbt": got %d items, expected 5.'
+                    % len(parts))
+                return
+            self.playerInfo.setCombatStats(*parts)
+            return
+
+        isAbil, rest = checkPrefix(msg, "stat stats ")
+        if isAbil:
+            parts = rest.split()
+            # str con dex int wis pow cha
+            if len(parts) != 7:
+                self.logError('"request stat stats": got %d items, expected 7.'
+                    % len(parts))
+                return
+            self.playerInfo.setAbilityScores(*parts)
+            return
+
+        isPlayer, rest = checkPrefix(msg, "player ")
+        if isPlayer:
+            tag, _, title = rest.partition(" ")
+            self.playerInfo.setPlayerId(tag, title)
+            return
+
+        self.logError('Unrecognized request "%s"' % msg)
 
     ########################################################################
     # Drawing information to the screen
@@ -465,6 +629,12 @@ class ClientInterfacer(object):
             # For the client this is just another color code.
             color = 0
         self._sendToClient("draw %s %s" % (color, msg))
+
+    def logWarning(self, msg):
+        self.draw("WARNING: " + str(msg), color=Color.ORANGE)
+
+    def logError(self, msg):
+        self.draw("ERROR: " + str(msg), color=Color.RED)
 
     def fatal(self, msg):
         """
@@ -547,11 +717,121 @@ class ClientInterfacer(object):
         sys.stderr.flush()
 
 
+# Note: requests are handled at:
+#     client/trunk/common/script.c@r20030:1175-1440
+# Watches are basically just passed through from the server, but there's some
+# special logic for stats at least, at:
+#     client/trunk/common/script.c@r20030:674-873
+# (in script_watch).
+class PlayerInfo:
+    def __init__(self):
+        # Player identification ("request player")
+        self.tag   = None
+        self.title = None
+        self.havePlayerId = False
+
+        # Vital stats ("request stat hp")
+        self.hp       = None
+        self.maxhp    = None
+        self.sp       = None
+        self.maxsp    = None
+        self.grace    = None
+        self.maxgrace = None
+        self.food     = None
+        self.haveVitalStats = False
+
+        # Combat stats ("request stat cmbt")
+        self.wc        = None
+        self.ac        = None
+        self.dam       = None
+        self.speed     = None
+        self.weapon_sp = None
+        self.haveCombatStats = False
+
+        # Ability scores ("request stat stats")
+        self.str = None
+        self.con = None
+        self.dex = None
+        self.int = None
+        self.wis = None
+        self.pow = None
+        self.cha = None
+        self.haveAbilityScores = False
+
+        # Experience and levels ("request stat xp") omitted for now, because
+        # I don't want to deal with mapping skill names to their levels (and
+        # because I have yet to write a script that needs this).
+
+        # Resistances ("request stat resists") ditto.
+        # Spell path atunements etc. ("request stat paths") ditto.
+
+    def getAllRequestTypes(self):
+        return [
+            "player",
+            "stat hp",
+            "stat stats",
+            "stat cmbt",
+        ]
+
+    def setPlayerId(self, tag, title):
+        self.tag   = int(tag)
+        self.title = str(title)
+        self.havePlayerId = True
+
+    def setVitalStats(self, hp, maxhp, sp, maxsp, grace, maxgrace, food):
+        self.hp       = int(hp)
+        self.maxhp    = int(maxhp)
+        self.sp       = int(sp)
+        self.maxsp    = int(maxsp)
+        self.grace    = int(grace)
+        self.maxgrace = int(maxgrace)
+        self.food     = int(food)
+        self.haveVitalStats = True
+
+    def setCombatStats(self, wc, ac, dam, speed, weapon_sp):
+        self.wc        = int(wc)
+        self.ac        = int(ac)
+        self.dam       = int(dam)
+        self.speed     = int(speed)
+        self.weapon_sp = int(weapon_sp)
+        self.haveCombatStats = True
+
+    def setAbilityScores(self, str_, con, dex, int_, wis, pow_, cha):
+        self.str = int(str_)
+        self.con = int(con )
+        self.dex = int(dex )
+        self.int = int(int_)
+        self.wis = int(wis )
+        self.pow = int(pow_)
+        self.cha = int(cha )
+        self.haveAbilityScores = True
+
+    def haveAllStats(self):
+        return self.havePlayerId and self.haveVitalStats and \
+            self.haveAbilityScores and self.haveCombatStats
+
+
 class Command:
     def __init__(self, commandString, count=None):
         self.commandString = commandString
         self.count         = count
 
+
+def checkPrefix(s, prefix):
+    """
+    Return a pair (hasPrefix, rest).
+    If prefix is a prefix of s:
+        hasPrefix is True
+        rest is everything after the prefix
+    Else:
+        hasPrefix is False
+        rest is s
+    """
+
+    if s.startswith(prefix):
+        return (True, s[len(prefix):])
+    else:
+        return (False, s)
 
 def chompSuffix(s, suffix="\n"):
     if s.endswith(suffix):
