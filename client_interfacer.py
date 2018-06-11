@@ -45,6 +45,8 @@ class ClientInterfacer(object):
     # trust the user to specify the count when moving items.
     DEFAULT_COUNT = 1
 
+    _numCreated = 0
+
     def __init__(self, maxPendingCommands=6):
         super(ClientInterfacer, self).__init__()
 
@@ -56,6 +58,10 @@ class ClientInterfacer(object):
         if platform.system() != "Linux":
             raise NotImplementedError("ClientInterfacer only implemented for "
                 "Linux.")
+
+        self.__class__._numCreated += 1
+        if self.__class__._numCreated > 1:
+            raise RuntimeError("Cannot create more than 1 ClientInterfacer.")
 
         # Do this preemptively because the whole infrastructure we use to issue
         # commands depends on it.
@@ -114,7 +120,7 @@ class ClientInterfacer(object):
     # will always be maxPendingCommands in flight, and the command queue will
     # never build up a bunch of extra commands.
 
-    def queueCommand(self, command, count=DEFAULT_COUNT):
+    def queueCommand(self, command, count=None):
         """
         Add a new command to the queue. If we're not already at
         maxPendingCommands, issue commands from the queue until either we are
@@ -123,6 +129,13 @@ class ClientInterfacer(object):
         If you are not moving items, count can be omitted. If you are moving
         items, then count must be specified: 0 to move all matching items, or
         else the number of items to move.
+
+        Normally command is just a string. However, you can also pass a
+        Command; in that case, if the 'count' argument to this function is
+        omitted, then the Command's count will be used. This allows you to
+        store an entire set of arguments for this function in a single
+        object -- for example, to have a list of commands that will be
+        executed. (See recipe.loopCommands for an example where this comes up.)
         """
 
         self._checkInvariants()
@@ -132,7 +145,7 @@ class ClientInterfacer(object):
 
         self._checkInvariants()
 
-    def issueCommand(self, command, count=DEFAULT_COUNT, maxQueueSize=0):
+    def issueCommand(self, command, count=None, maxQueueSize=0):
         """
         Same as queueCommand, but block until the command has actually been
         submitted to the server (which may require some commands ahead of it to
@@ -153,7 +166,7 @@ class ClientInterfacer(object):
 
         self._checkInvariants()
 
-    def execCommand(self, command, count=DEFAULT_COUNT):
+    def execCommand(self, command, count=None):
         """
         Same as queueCommand, but block until the command has been fully
         executed (that is, until the server has confirmed that it's done).
@@ -297,6 +310,12 @@ class ClientInterfacer(object):
         self.numPendingCommands += 1
 
     def _encodeCommand(self, command, count):
+        if isinstance(command, Command):
+            if count is None:
+                count = command.count
+            command = command.commandString
+        if count is None:
+            count = self.DEFAULT_COUNT
         return "issue %s 1 %s" % (count, command)
 
     def _checkInvariants(self):
@@ -306,7 +325,7 @@ class ClientInterfacer(object):
     ########################################################################
     # Yielding control to the client interfacer.
 
-    def idle(self):
+    def idle(self, timeout=None):
         """
         Wait until something happens. Do internal handling for any inputs
         received (as with pumpEvents).
@@ -319,10 +338,13 @@ class ClientInterfacer(object):
 
         Most scripts will want to call this function somewhere in their main
         loop, to avoid busy-waiting.
+
+        NOTE: By default, this will block indefinitely waiting for input. If
+        you don't want that, you can specify a timeout (in seconds).
         """
 
         self._checkInvariants()
-        self._waitForClientInput()
+        self._waitForClientInput(timeout=timeout)
         self._handlePendingClientInputs()
         self._checkInvariants()
 
@@ -523,6 +545,12 @@ class ClientInterfacer(object):
     def _sendToConsole(self, msg):
         sys.stderr.write(str(msg) + "\n")
         sys.stderr.flush()
+
+
+class Command:
+    def __init__(self, commandString, count=None):
+        self.commandString = commandString
+        self.count         = count
 
 
 def chompSuffix(s, suffix="\n"):

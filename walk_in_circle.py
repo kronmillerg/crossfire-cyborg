@@ -1,6 +1,9 @@
 """
 Test script, just to showcase/smoketest some of the simpler features of
 ClientInterfacer.
+
+Intentionally does the loop by hand, even though it's really another
+recipe.loopCommands script, because that's more in keeping with its purpose.
 """
 
 import client_interfacer
