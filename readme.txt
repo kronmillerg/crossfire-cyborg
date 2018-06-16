@@ -63,6 +63,10 @@ Item information:
             confusing circumstances.
       - name is the human-readable name of the object, which will often contain
         internal spaces.
+  - I think _watching_ for changes to items might be a lost cause. The messages
+    for when you drop or pick up an item come through as something like:
+        watch item2 ## bytes unparsed: 00 00 0c 6f [...]
+    In other words, a bunch of totally unparsed bytes encoded in hex.
 
 Manipulating items directly:
   - Use "monitor" then click on things to see the syntax.
