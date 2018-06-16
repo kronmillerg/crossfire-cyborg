@@ -1,4 +1,5 @@
 import collections
+import os
 import platform
 import select
 import sys
@@ -63,9 +64,32 @@ class ClientInterfacer(object):
         if self.__class__._numCreated > 1:
             raise RuntimeError("Cannot create more than 1 ClientInterfacer.")
 
+        # Disable buffering for sys.stdin.
+        #
+        # This is necessary because apparently, select on stdin returns False
+        # if there is input but it's all buffered by Python. I'd guess Python's
+        # select is just a thin wrapper around the real select(), which knows
+        # if the pipe has data in it, but not if Python has read that data out
+        # of the pipe into its own buffer. So without this line, the script can
+        # hang because there's input waiting for it but it doesn't know about
+        # that input. (If more input comes in, that can trigger the select and
+        # unblock the script, but that can take indefinitely long).
+        #
+        # To see this happen in practice, try commenting out this line and
+        # running print_inv.py.
+        #
+        # Thanks to:
+        #     https://stackoverflow.com/q/33305131
+        #     https://stackoverflow.com/a/3670470
+        # for the fix.
+        sys.stdin = os.fdopen(sys.stdin.fileno(), "r", 0)
+
         # This one is considered part of the public API. If it needs to be
         # calculated, I'll @property it.
         self.playerInfo = PlayerInfo()
+
+        self._inventory     = []
+        self._invIsComplete = False
 
         # All of our queues are implemented using collections.deque. New
         # elements are enqueued (pushed) on the right (via append()), and the
@@ -411,6 +435,48 @@ class ClientInterfacer(object):
 
         self._sendToClient("unwatch stats")
 
+    # Querying inventory.
+    def getInventory(self):
+        self.requestInventory()
+        self._idleUntil(lambda: self.hasInventory())
+        # self.inventory is a reference to self._inventory, so doesn't allow
+        # modifying. That's fine, it's accessed as a @property so expected to
+        # be a fairly direct view of the ClientInterfacer's internal state. But
+        # it seems less intuitive for getInventory(), a function, to do the
+        # same. So copy the inventory array here so that the user can modify it
+        # if they want.
+        inv = self.inventory
+        assert inv is not None
+        return inv[:]
+
+    def requestInventory(self):
+        # TODO: Distinguish "we haven't ever requested the inventory" from
+        # "we're currently in the middle of receiving a new inventory". In the
+        # latter case, error here.
+        self._inventory     = []
+        self._invIsComplete = False
+        self._sendToClient("request items inv")
+
+    def hasInventory(self):
+        return self._invIsComplete
+
+    @property
+    def inventory(self):
+        """
+        Return list of items in player's inventory, as of the last time we
+        checked. If we haven't ever checked or we're currently in the middle of
+        updating the inventory, return None.
+
+        Do not modify the returned list!
+        """
+
+        if self.hasInventory():
+            return self._inventory
+        else:
+            # TODO: Hold onto the "previous inventory" and then update
+            # atomically once the new one is complete.
+            return None
+
     # scripttells
     def hasScripttell(self):
         return self._hasInputInQueue(self.pendingScripttells)
@@ -564,7 +630,31 @@ class ClientInterfacer(object):
         through from the client.
         """
 
-        isVital, rest = checkPrefix(msg, "stat hp ")
+        isStat, rest = checkPrefix(msg, "stat ")
+        if isStat:
+            self._handleRequestStat(rest)
+            return
+
+        isItem, rest = checkPrefix(msg, "items ")
+        if isItem:
+            self._handleRequestItem(rest)
+            return
+
+        isPlayer, rest = checkPrefix(msg, "player ")
+        if isPlayer:
+            tag, _, title = rest.partition(" ")
+            self.playerInfo.setPlayerId(tag, title)
+            return
+
+        self.logError('Unrecognized request "%s"' % msg)
+
+    def _handleRequestStat(self, msg):
+        """
+        msg has the initial "request stat " stripped off, but is otherwise
+        passed through from the client.
+        """
+
+        isVital, rest = checkPrefix(msg, "hp ")
         if isVital:
             parts = rest.split()
             # hp maxhp sp maxsp grace maxgrace food
@@ -575,7 +665,7 @@ class ClientInterfacer(object):
             self.playerInfo.setVitalStats(*parts)
             return
 
-        isCombat, rest = checkPrefix(msg, "stat cmbt ")
+        isCombat, rest = checkPrefix(msg, "cmbt ")
         if isCombat:
             parts = rest.split()
             # wc ac dam speed weapon_sp
@@ -586,7 +676,7 @@ class ClientInterfacer(object):
             self.playerInfo.setCombatStats(*parts)
             return
 
-        isAbil, rest = checkPrefix(msg, "stat stats ")
+        isAbil, rest = checkPrefix(msg, "stats ")
         if isAbil:
             parts = rest.split()
             # str con dex int wis pow cha
@@ -597,13 +687,43 @@ class ClientInterfacer(object):
             self.playerInfo.setAbilityScores(*parts)
             return
 
-        isPlayer, rest = checkPrefix(msg, "player ")
-        if isPlayer:
-            tag, _, title = rest.partition(" ")
-            self.playerInfo.setPlayerId(tag, title)
+        self.logError('Unrecognized request stat "%s"' % msg)
+
+    def _handleRequestItem(self, msg):
+        """
+        msg has the initial "request items " stripped off, but is otherwise
+        passed through from the client.
+        """
+
+        isInv, rest = checkPrefix(msg, "inv ")
+        if isInv:
+            if rest == "end":
+                # If we were waiting for a "request items inv" callback, then
+                # it's done now. If not, then self._invIsComplete already, so
+                # it's safe to set it in either case.
+                self._invIsComplete = True
+                return
+            elif self._invIsComplete:
+                # If we're not expecting an inventory update, just drop the
+                # message. Without this, I worry we'd end up with an inventory
+                # that's missing some items, or that has some duplicates, which
+                # would be very confusing.
+                return
+
+            # Split into <tag> <num> <weight> <flags> <type> <name>
+            # That's 6 parts, so 5 splits.
+            parts = rest.split(None, 5)
+            if len(parts) != 6:
+                self.logError('"request items inv": got %d fields, '
+                              'expected 6.' % len(parts))
+                return
+            tag, num, weight, flags, clientType, name = parts
+            self._inventory.append(Item(int(tag), int(num), int(weight),
+                                        int(flags), int(clientType),
+                                        name))
             return
 
-        self.logError('Unrecognized request "%s"' % msg)
+        self.logError('Unrecognized request items "%s"' % msg)
 
     ########################################################################
     # Drawing information to the screen
@@ -628,6 +748,10 @@ class ClientInterfacer(object):
         if lowerPanel:
             # For the client this is just another color code.
             color = 0
+        # TODO: It looks like there's a limit of 127 bytes or so of drawn
+        # information, excluding the initial "draw <color>". (Probably 128
+        # bytes but the last one is a '\0'.) If the message is longer than
+        # that, split it up and wrap onto new lines.
         self._sendToClient("draw %s %s" % (color, msg))
 
     def logWarning(self, msg):
@@ -809,6 +933,55 @@ class PlayerInfo:
     def haveAllStats(self):
         return self.havePlayerId and self.haveVitalStats and \
             self.haveAbilityScores and self.haveCombatStats
+
+
+class Item:
+    def __init__(self, tag, num, weight, flags, clientType, name):
+        self.tag        = tag        # Unique identifier
+        self.num        = num        # Size of stack
+        self.weight     = weight     # integer number of grams
+        self.flags      = flags      # See functions to unpack this
+        self.clientType = clientType # Determines sorting order
+        self.name       = name       # Human-readable name. Note that the name
+                                     # may include a human-readable description
+                                     # of the stack size as well; for example,
+                                     # "nine silver coins".
+
+    # Unpacking the flags bitmask. This is assembled in script_send_item
+    # (common/script.c). The bits are:
+    #     0x0200  512     unidentified
+    #     0x0100  256     magical
+    #     0x0080  128     cursed
+    #     0x0040   64     damned
+    #     0x0020   32     unpaid
+    #     0x0010   16     locked
+    #     0x0008    8     applied
+    #     0x0004    4     open
+    #     0x0002    2     was_open
+    #     0x0001    1     inv_updated
+    @property
+    def unidentified(self): return self._flagBit(0x0200)
+    @property
+    def magical     (self): return self._flagBit(0x0100)
+    @property
+    def cursed      (self): return self._flagBit(0x0080)
+    @property
+    def damned      (self): return self._flagBit(0x0040)
+    @property
+    def unpaid      (self): return self._flagBit(0x0020)
+    @property
+    def locked      (self): return self._flagBit(0x0010)
+    @property
+    def applied     (self): return self._flagBit(0x0008)
+    @property
+    def open        (self): return self._flagBit(0x0004)
+    @property
+    def wasOpen     (self): return self._flagBit(0x0002)
+    @property
+    def invUpdated  (self): return self._flagBit(0x0001)
+
+    def _flagBit(self, bit):
+        return (self.flags & bit) != 0
 
 
 class Command:

@@ -40,7 +40,7 @@ Item information:
             scripts. :thinking:
       - flags is a bitmask:
             0x0200  512     unidentified
-            0x0100  256     magic
+            0x0100  256     magical
             0x0080  128     cursed
             0x0040   64     damned
             0x0020   32     unpaid
