@@ -88,8 +88,27 @@ class ClientInterfacer(object):
         # calculated, I'll @property it.
         self.playerInfo = PlayerInfo()
 
-        self._inventory     = []
-        self._invIsComplete = False
+        # Mappings from request type ("inv", "on", etc.) to lists of Items.
+        #   - itemLists[type] contains the most recent fully-parsed list of
+        #     items from a request of that type. If we have never fully
+        #     resolved a request of a given type, then that key is not present
+        #     in the mapping.
+        #   - itemListsInProgress[type] contains the list of items parsed so
+        #     far from a currently-active request of that type. If a given type
+        #     of items has never been requested, or if the most recent request
+        #     has been fully resolved, then the key is not present.
+        # Note that all 4 combinations of
+        #     ((key in itemLists), (key in itemListsInProgress))
+        # are possible:
+        #   - Not in either -- The item type has never been requested
+        #   - In itemListsInProgress only -- The item type has been requested
+        #     once, but we're not finished handling the response.
+        #   - In itemLists only -- The item type has been requested once, and
+        #     we're finished resolving that request.
+        #   - In both -- The item type has been requested more than once, and
+        #     we're currently in the middle of resolving the latest request.
+        self.itemLists           = {}
+        self.itemListsInProgress = {}
 
         # All of our queues are implemented using collections.deque. New
         # elements are enqueued (pushed) on the right (via append()), and the
@@ -435,49 +454,110 @@ class ClientInterfacer(object):
 
         self._sendToClient("unwatch stats")
 
+
     # Querying inventory.
+
     def getInventory(self):
-        self.requestInventory()
-        self._idleUntil(lambda: self.hasInventory())
-        # self.inventory is a reference to self._inventory, so doesn't allow
-        # modifying. That's fine, it's accessed as a @property so expected to
-        # be a fairly direct view of the ClientInterfacer's internal state. But
-        # it seems less intuitive for getInventory(), a function, to do the
-        # same. So copy the inventory array here so that the user can modify it
-        # if they want.
-        inv = self.inventory
-        assert inv is not None
-        return inv[:]
+        return self.getItemsOfType("inv")
 
     def requestInventory(self):
-        # TODO: Distinguish "we haven't ever requested the inventory" from
-        # "we're currently in the middle of receiving a new inventory". In the
-        # latter case, error here.
-        self._inventory     = []
-        self._invIsComplete = False
-        self._sendToClient("request items inv")
-
-    def hasInventory(self):
-        return self._invIsComplete
+        self.requestItemsOfType("inv")
 
     @property
     def inventory(self):
         """
-        Return list of items in player's inventory, as of the last time we
-        checked. If we haven't ever checked or we're currently in the middle of
-        updating the inventory, return None.
+        Return a reference to the most-recently parsed list of items in the
+        player's inventory, or None if we've never completed a request for the
+        player's inventory.
 
-        Do not modify the returned list!
+        This is almost the same as self.itemsOfType("inv"), except that this
+        returns a direct reference to the list, whereas that other call returns
+        a copy of the list.
         """
 
-        if self.hasInventory():
-            return self._inventory
+        # This is a @property, which means that (1) it should be very cheap, so
+        # we can't do a linear-time copy of a list whose length is more or less
+        # unbounded, and (2) users are more likely to expect that modifying it
+        # will modify our internal state. So return a direct reference to the
+        # "items inv" list.
+        #
+        # (Now, if only I knew of a way to create a copy-on-write duplicate of
+        # the original list and return that instead... or, y'know, if only the
+        # language provided a way to mark the return value as "const".)
+        return self.itemsOfType.get("inv", None)
+
+    def hasInventory(self):
+        return self.hasItemsOfType("inv")
+
+    def hasUpdInventory(self):
+        return self.hasUpdItemsOfType("inv")
+
+
+    # Querying items more generally.
+
+    def getItemsOfType(self, requestType):
+        """
+        Ask the client for a list of items of the given type, block until we
+        get a complete response, and return the parsed item list.
+        """
+
+        self.requestItemsOfType(requestType)
+        self._idleUntil(lambda: self.hasItemsOfType(requestType))
+        return self.itemsOfType(requestType)
+
+    def requestItemsOfType(self, requestType):
+        """
+        Ask the client for a list of items of the given type, but return
+        immediately. Use self.hasUpdItemsOfType(requestType) to check if the
+        request has resolved yet, and self.itemsOfType(requestType) to get the
+        list once the request has resolved.
+        """
+
+        if requestType in self.itemListsInProgress:
+            self.logError("Already in the middle of requesting items %s, " \
+                "better not request them again." % requestType)
+            return
+        self.itemListsInProgress[requestType] = []
+        self._sendToClient("request items %s" % requestType)
+
+    def itemsOfType(self, requestType):
+        """
+        Return the most recently resolved list of items of the given type, or
+        None if we've never gotten a complete list of items of the given type.
+        """
+
+        # Note: this is very slightly different from
+        # self.itemLists.get(requestType, None) because we copy the list if
+        # it's present, but we can't do None[:].
+        if self.hasItemsOfType(requestType):
+            # Make a copy of the item list because this is a real member
+            # function, not a @property, so it would be confusing if the user
+            # modified the returned list and it messed with our internal state.
+            return self.itemLists[requestType][:]
         else:
-            # TODO: Hold onto the "previous inventory" and then update
-            # atomically once the new one is complete.
             return None
 
+    def hasItemsOfType(self, requestType):
+        """
+        Return True if we have a complete list of items of the given type, even
+        if there is currently a newer request outstanding for items of that
+        type.
+        """
+
+        return requestType in self.itemLists
+
+    def hasUpdItemsOfType(self, requestType):
+        """
+        Check if the most recent request for items of the given type has fully
+        resolved. If we have never requested items of that type, return False.
+        """
+
+        return requestType in self.itemLists and \
+            requestType not in self.itemListsInProgress
+
+
     # scripttells
+
     def hasScripttell(self):
         return self._hasInputInQueue(self.pendingScripttells)
 
@@ -486,6 +566,7 @@ class ClientInterfacer(object):
 
     def waitForScripttell(self):
         self._waitForInputInQueue(self.pendingScripttells)
+
 
     # Misc other inputs that don't have their own handling.
     # NOTE: Use of these next three functions is not forward-compatible! Inputs
@@ -695,35 +776,31 @@ class ClientInterfacer(object):
         passed through from the client.
         """
 
-        isInv, rest = checkPrefix(msg, "inv ")
-        if isInv:
-            if rest == "end":
-                # If we were waiting for a "request items inv" callback, then
-                # it's done now. If not, then self._invIsComplete already, so
-                # it's safe to set it in either case.
-                self._invIsComplete = True
-                return
-            elif self._invIsComplete:
-                # If we're not expecting an inventory update, just drop the
-                # message. Without this, I worry we'd end up with an inventory
-                # that's missing some items, or that has some duplicates, which
-                # would be very confusing.
-                return
-
-            # Split into <tag> <num> <weight> <flags> <type> <name>
-            # That's 6 parts, so 5 splits.
-            parts = rest.split(None, 5)
-            if len(parts) != 6:
-                self.logError('"request items inv": got %d fields, '
-                              'expected 6.' % len(parts))
-                return
-            tag, num, weight, flags, clientType, name = parts
-            self._inventory.append(Item(int(tag), int(num), int(weight),
-                                        int(flags), int(clientType),
-                                        name))
+        requestType, _, rest = msg.partition(" ")
+        if requestType not in self.itemListsInProgress:
+            # If we're not expecting an item update of the given type, drop the
+            # message. Conceivably we could try to lazily start a list, but I
+            # worry it would come out incomplete or with some duplicate items.
+            self.logWarning('Received unexpected request items %s "%s"' %
+                (requestType, rest))
             return
 
-        self.logError('Unrecognized request items "%s"' % msg)
+        if rest == "end":
+            self.itemLists[requestType] = self.itemListsInProgress[requestType]
+            del self.itemListsInProgress[requestType]
+            return
+
+        # Split into <tag> <num> <weight> <flags> <type> <name>
+        # That's 6 parts, so 5 splits.
+        parts = rest.split(None, 5)
+        if len(parts) != 6:
+            self.logError('"request items %s": got %d fields, expected 6.' %
+                (requestType, len(parts)))
+            return
+        tag, num, weight, flags, clientType, name = parts
+        item = Item(int(tag), int(num), int(weight), int(flags),
+                    int(clientType), name)
+        self.itemListsInProgress[requestType].append(item)
 
     ########################################################################
     # Drawing information to the screen
@@ -935,6 +1012,16 @@ class PlayerInfo:
             self.haveAbilityScores and self.haveCombatStats
 
 
+# One-off classes used by ClientInterfacer.
+
+class Command:
+    def __init__(self, commandString, count=None):
+        self.commandString = commandString
+        self.count         = count
+
+
+# Actual classes that more or less make sense on their own.
+
 class Item:
     def __init__(self, tag, num, weight, flags, clientType, name):
         self.tag        = tag        # Unique identifier
@@ -942,10 +1029,13 @@ class Item:
         self.weight     = weight     # integer number of grams
         self.flags      = flags      # See functions to unpack this
         self.clientType = clientType # Determines sorting order
-        self.name       = name       # Human-readable name. Note that the name
-                                     # may include a human-readable description
-                                     # of the stack size as well; for example,
-                                     # "nine silver coins".
+
+        # Human-readable name. A couple notes about this:
+        #   1. This is the display name, which is subject to any custom
+        #      renaming that the player has done.
+        #   2. The name includes any human-readable description of the stack
+        #      size -- for example, "nine silver coins".
+        self.name       = name
 
     # Unpacking the flags bitmask. This is assembled in script_send_item
     # (common/script.c). The bits are:
@@ -982,12 +1072,6 @@ class Item:
 
     def _flagBit(self, bit):
         return (self.flags & bit) != 0
-
-
-class Command:
-    def __init__(self, commandString, count=None):
-        self.commandString = commandString
-        self.count         = count
 
 
 def checkPrefix(s, prefix):

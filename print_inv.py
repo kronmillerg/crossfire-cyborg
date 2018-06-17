@@ -16,7 +16,7 @@ inv.sort(key=lambda x: x.clientType)
 for item in inv:
     name = item.name
     if item.locked:
-        name = "* " + name
+        name += " *"
     if item.magical:
         name += " (magic)"
     if item.damned:
