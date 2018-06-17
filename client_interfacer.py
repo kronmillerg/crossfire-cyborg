@@ -368,8 +368,15 @@ class ClientInterfacer(object):
         self._sendToClient(encodedCommand)
         # FIXME: Eww, this is a mess! Some (all?) "special" commands don't
         # actually generate a "watch comc", which means this count is wrong.
-        # Check if sync has this same problem. If so... I don't even know what
-        # to do to fix this.
+        # And "sync" has the same problem! See test_sync.py... if you submit 40
+        # "issue move" commands in a row, then do a sync, you _immediately_ get
+        # "sync 0" back from the client, then afterward all the commands
+        # resolve. What can we do? How can we time these commands well if
+        # there's no way to know when they've completed? I suppose we could
+        # hack around it by auto-adding a harmless regular command every
+        # (maxPendingCommands-1) or so.... I think "stay" might be a nop? If
+        # that fails, we could always use something like "search", or one of
+        # the silly emote commands that no one ever uses.
         self.numPendingCommands += 1
 
     def _encodeCommand(self, command, count):
