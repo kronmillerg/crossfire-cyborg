@@ -10,21 +10,37 @@ calling is the entirety of your script.
 
 from client_interfacer import ClientInterfacer, Command
 
-def loopCommands(commandList, cf=None, queueDepth=10):
+def loopCommands(commandList, **kwargs):
+    def generateCommands():
+        while True:
+            for cmd in commandList:
+                yield cmd
+    runCommandSequence(generateCommands(), **kwargs)
+
+def runCommandSequence(commands, cf=None, queueDepth=10):
     if cf is None:
         cf = ClientInterfacer()
-    done = False
+    if queueDepth < 1:
+        queueDepth = 1
+    iterator   = iter(commands)
+    done       = False
+    atEndOfSeq = False
     while not done:
-        while cf.numQueuedCommands() < queueDepth:
-            for cmd in commandList:
-                cf.queueCommand(cmd)
+        while not atEndOfSeq and cf.numQueuedCommands() < queueDepth:
+            try:
+                cf.queueCommand(iterator.next())
+            except StopIteration:
+                atEndOfSeq = True
+                break
+        if atEndOfSeq and cf.numQueuedCommands() == 0:
+            break
         cf.idle()
         if cf.hasScripttell():
             # TODO: Add more sophisticated parsing of scripttell commands.
             done = True
+            cf.dropAllQueuedCommands()
             cf.draw("Closing down once pending commands resolve.")
 
-    cf.dropAllQueuedCommands()
     cf.flushCommands()
     cf.draw("Done.")
 

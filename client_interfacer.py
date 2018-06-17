@@ -159,6 +159,12 @@ class ClientInterfacer(object):
         # TODO: Consider using "sync" instead of "watch comc"?
         self._sendToClient("watch comc")
 
+        # Also request (and block until we receive) the basic player info. We
+        # can't pick up items without knowing the player's tag, and I don't
+        # want users to have to worry about this.
+        self._sendToClient("request player")
+        self._idleUntil(lambda: self.playerInfo.tag is not None)
+
     ########################################################################
     # Issuing commands to the player
 
@@ -360,10 +366,17 @@ class ClientInterfacer(object):
 
     def _sendCommand(self, encodedCommand):
         self._sendToClient(encodedCommand)
+        # FIXME: Eww, this is a mess! Some (all?) "special" commands don't
+        # actually generate a "watch comc", which means this count is wrong.
+        # Check if sync has this same problem. If so... I don't even know what
+        # to do to fix this.
         self.numPendingCommands += 1
 
     def _encodeCommand(self, command, count):
         if isinstance(command, Command):
+            if command.isSpecial:
+                # Omit <count> <must_send> prefix.
+                return "issue %s" % (command.commandString)
             if count is None:
                 count = command.count
             command = command.commandString
@@ -374,6 +387,38 @@ class ClientInterfacer(object):
     def _checkInvariants(self):
         assert self.numPendingCommands >= self.maxPendingCommands or \
             len(self.commandQueue) == 0
+
+    ########################################################################
+    # Generating specific types of commands.
+
+    # Note that you have to actually pass the returned Commands to queueCommand
+    # or whatever if you want to issue them.
+
+    # FIXME: Be careful using these! They don't actually generate "watch comc"
+    # responses when they resolve, so currently they get numPendingCommands out
+    # of sync. For example, don't write a script that issues a long sequence of
+    # getMoveCommand()s, because it won't time itself right. *cough*
+    # water_of_the_wise.py *cough*.
+
+    def getApplyCommand(self, item):
+        return Command("apply %d" % item.tag, isSpecial=True)
+
+    def getPickupCommand(self, item, count=0):
+        return self._getMoveCommand(item, self.playerInfo.tag, count)
+
+    def getDropCommand(self, item, count=0):
+        return self._getMoveCommand(item, 0, count)
+
+    def getMoveCommand(self, item, dest, count=0):
+        return self._getMoveCommand(item, dest.tag, count)
+
+    def _getMoveCommand(self, item, destTag, count):
+        if item.locked:
+            self.fatal("Attempt to move locked item %s <tag=%s>." %
+                (item.name, item.tag))
+            return None
+        commandString = "move %d %d %d" % (destTag, item.tag, count)
+        return Command(commandString, isSpecial=True)
 
     ########################################################################
     # Yielding control to the client interfacer.
@@ -497,11 +542,13 @@ class ClientInterfacer(object):
 
     def getItemsOfType(self, requestType):
         """
-        Ask the client for a list of items of the given type, block until we
-        get a complete response, and return the parsed item list.
+        Ask the client for a list of items of the given type if we haven't
+        already, block until we get a complete response, and return the parsed
+        item list.
         """
 
-        self.requestItemsOfType(requestType)
+        if requestType not in self.itemListsInProgress:
+            self.requestItemsOfType(requestType)
         self._idleUntil(lambda: self.hasItemsOfType(requestType))
         return self.itemsOfType(requestType)
 
@@ -842,7 +889,7 @@ class ClientInterfacer(object):
         Print a fatal error message then exit.
         """
 
-        self.draw(msg, color=Color.RED)
+        self.draw("FATAL: " + str(msg), color=Color.RED)
         sys.exit()
 
     # Provide a public API function for outputting to the console so that other
@@ -1015,9 +1062,10 @@ class PlayerInfo:
 # One-off classes used by ClientInterfacer.
 
 class Command:
-    def __init__(self, commandString, count=None):
+    def __init__(self, commandString, count=None, isSpecial=False):
         self.commandString = commandString
         self.count         = count
+        self.isSpecial     = isSpecial
 
 
 # Actual classes that more or less make sense on their own.
