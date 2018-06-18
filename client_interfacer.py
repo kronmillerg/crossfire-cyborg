@@ -380,7 +380,10 @@ class ClientInterfacer(object):
         #   - As best I can tell by looking at the server code
         #     (server/c_move.c), "stay" is indeed a no-op when the "fire"
         #     modifier is disabled.
-        self.numPendingCommands += 1
+        #
+        # FIXME: This workaround is such a hack!!
+        if encodedCommand[len("issue ")].isdigit():
+            self.numPendingCommands += 1
 
     def _encodeCommand(self, command, count):
         if isinstance(command, Command):
@@ -409,6 +412,9 @@ class ClientInterfacer(object):
     # of sync. For example, don't write a script that issues a long sequence of
     # getMoveCommand()s, because it won't time itself right. *cough*
     # water_of_the_wise.py *cough*.
+
+    def getMarkCommand(self, item):
+        return Command("mark %d" % item.tag, isSpecial=True)
 
     def getApplyCommand(self, item):
         return Command("apply %d" % item.tag, isSpecial=True)
