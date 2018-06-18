@@ -377,6 +377,9 @@ class ClientInterfacer(object):
         # (maxPendingCommands-1) or so.... I think "stay" might be a nop? If
         # that fails, we could always use something like "search", or one of
         # the silly emote commands that no one ever uses.
+        #   - As best I can tell by looking at the server code
+        #     (server/c_move.c), "stay" is indeed a no-op when the "fire"
+        #     modifier is disabled.
         self.numPendingCommands += 1
 
     def _encodeCommand(self, command, count):

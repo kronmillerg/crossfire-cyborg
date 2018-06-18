@@ -1,0 +1,35 @@
+
+        # FIXME: Eww, this is a mess! Some (all?) "special" commands don't
+        # actually generate a "watch comc", which means this count is wrong.
+        # And "sync" has the same problem! See test_sync.py... if you submit 40
+        # "issue move" commands in a row, then do a sync, you _immediately_ get
+        # "sync 0" back from the client, then afterward all the commands
+        # resolve. What can we do? How can we time these commands well if
+        # there's no way to know when they've completed?
+
+After looking at the client and server code some, I think this might actually
+be intentional behavior. It seems silly to me, though.
+
+In any case, even if it is a bug, it's a bug in the server (or maybe even in
+the server/client protocol), so can't be fixed on metalforge. So I'm going to
+have to hack around it regardless.
+
+The basic idea is that _most_ client-to-server commands are sent using the
+"ncom" command, which I guess is something like "ncom <actual command>"
+(possibly with a count and/or must_send in there?). But there are a small
+number of other commands that don't go through ncom. Basically I think anything
+that you can type in the command field is an ncom.
+
+ncom is handled in the server in new_player_cmd (socket/request.c). That
+function delegates the real work to execute_newserver_command (server/c_new.c),
+but one of the few things new_player_cmd does is send the "comc" response.
+
+Other commands sent to the server are handled by other functions, all defined
+by the table player_commands in socket/loop.c.
+
+As a specific example, "move" is handled by move_cmd, defined in
+socket/request.c. It has the same signature as new_player_cmd, so it might be
+possible to just copy the same code in if we wanted to fix this on the
+server-side. But it seems like it might be intentional that this is only sent
+for ncom commands?
+
