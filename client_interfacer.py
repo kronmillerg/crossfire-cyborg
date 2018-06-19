@@ -1,14 +1,14 @@
 
-# FIXME: Eww, this is a mess! Some (all?) "special" commands don't actually
-# generate a "watch comc", which means this count is wrong.  And "sync" has the
-# same problem! See test_sync.py... if you submit 40 "issue move" commands in a
-# row, then do a sync, you _immediately_ get "sync 0" back from the client,
-# then afterward all the commands resolve. What can we do? How can we time
-# these commands well if there's no way to know when they've completed? I
-# suppose we could hack around it by auto-adding a harmless regular command
-# every (maxPendingCommands-1) or so.... I think "stay" might be a nop? If that
-# fails, we could always use something like "search", or one of the silly emote
-# commands that no one ever uses.
+# FIXME[ncom]: Eww, this is a mess! Some (all?) "special" commands don't
+# actually generate a "watch comc", which means this count is wrong.  And
+# "sync" has the same problem! See test_sync.py... if you submit 40 "issue
+# move" commands in a row, then do a sync, you _immediately_ get "sync 0" back
+# from the client, then afterward all the commands resolve. What can we do? How
+# can we time these commands well if there's no way to know when they've
+# completed? I suppose we could hack around it by auto-adding a harmless
+# regular command every (maxPendingCommands-1) or so.... I think "stay" might
+# be a nop? If that fails, we could always use something like "search", or one
+# of the silly emote commands that no one ever uses.
 #   - As best I can tell by looking at the server code (server/c_move.c),
 #     "stay" is indeed a no-op when the "fire" modifier is disabled.
 #
@@ -96,6 +96,7 @@ class ClientInterfacer(object):
 
     _numCreated = 0
 
+    # TODO[ncom]: Rename keyword argument.
     def __init__(self, maxPendingCommands=6):
         super(ClientInterfacer, self).__init__()
 
@@ -185,8 +186,8 @@ class ClientInterfacer(object):
         #     self.numPendingCommands >= self.maxPendingCommands or \
         #         len(self.commandQueue) == 0
         self.commandQueue = collections.deque()
-        self.numPendingCommands = 0
-        self.maxPendingCommands = maxPendingCommands
+        self.numPendingCommands = 0 # TODO[ncom]: Make this private.
+        self.maxPendingCommands = maxPendingCommands # TODO[ncom]: Private.
 
         # Queues for particular types of inputs.
         self.pendingScripttells = collections.deque()
@@ -322,6 +323,7 @@ class ClientInterfacer(object):
 
         self._checkInvariants()
 
+        # TODO[ncom]: Ensure there's an ncom at the end.
         self._idleUntil(lambda: len(self.commandQueue) == 0 and \
             self.numPendingCommands == 0)
 
@@ -332,6 +334,7 @@ class ClientInterfacer(object):
 
     def hasAnyPendingCommands(self):
         self._checkInvariants()
+        # TODO[ncom]: If so, ensure there's an ncom.
         return self.numPendingCommands > 0
 
     def hasMaxPendingCommands(self):
@@ -346,6 +349,7 @@ class ClientInterfacer(object):
 
     # Allow changing this dynamically because sometimes you want one part of a
     # script to be careful and another part to be fast.
+    # TODO[ncom]: Rename.
     def setMaxPendingCommands(self, maxPendingCommands):
         """
         Change the number of commands that may be pending on the server before
@@ -414,7 +418,7 @@ class ClientInterfacer(object):
 
     def _sendCommand(self, encodedCommand):
         self._sendToClient(encodedCommand)
-        # FIXME: This workaround is such a hack!!
+        # FIXME[ncom]: This workaround is such a hack!!
         if encodedCommand[len("issue ")].isdigit():
             self.numPendingCommands += 1
 
@@ -440,11 +444,11 @@ class ClientInterfacer(object):
     # Note that you have to actually pass the returned Commands to queueCommand
     # or whatever if you want to issue them.
 
-    # FIXME: Be careful using these! They don't actually generate "watch comc"
-    # responses when they resolve, so currently they get numPendingCommands out
-    # of sync. For example, don't write a script that issues a long sequence of
-    # getMoveCommand()s, because it won't time itself right. *cough*
-    # water_of_the_wise.py *cough*.
+    # FIXME[ncom]: Be careful using these! They don't actually generate "watch
+    # comc" responses when they resolve, so currently they get
+    # numPendingCommands out of sync. For example, don't write a script that
+    # issues a long sequence of getMoveCommand()s, because it won't time itself
+    # right. *cough* water_of_the_wise.py *cough*.
 
     def getMarkCommand(self, item):
         return Command("mark %d" % item.tag, isSpecial=True)
