@@ -1,3 +1,51 @@
+
+# FIXME: Eww, this is a mess! Some (all?) "special" commands don't actually
+# generate a "watch comc", which means this count is wrong.  And "sync" has the
+# same problem! See test_sync.py... if you submit 40 "issue move" commands in a
+# row, then do a sync, you _immediately_ get "sync 0" back from the client,
+# then afterward all the commands resolve. What can we do? How can we time
+# these commands well if there's no way to know when they've completed? I
+# suppose we could hack around it by auto-adding a harmless regular command
+# every (maxPendingCommands-1) or so.... I think "stay" might be a nop? If that
+# fails, we could always use something like "search", or one of the silly emote
+# commands that no one ever uses.
+#   - As best I can tell by looking at the server code (server/c_move.c),
+#     "stay" is indeed a no-op when the "fire" modifier is disabled.
+#
+# Okay, here's the plan. Instead of just a numPendingCommands, track the full
+# list of which ones are ncom and which are special. When we get a watch comc
+# (or sync by 1 more...), pop all of the leading specials (if any) plus one
+# ncom. Reinterpret the maxPendingCommands as "we'll try to have at least this
+# many pending commands at a time, up to the whole queue." At a given time, we
+# have a lower bound and upper bound on how many commands are queued. If the
+# upper bound goes below maxPendingCommands, then dispatch more commands from
+# the queue.  As far as spacing of "stay"s, I propose that we make the rule
+# that we add just enough stays so that you can't wind up in a situation where
+# 0 pending commands and maxPendingCommands look the same -- that is, you never
+# have as many as maxPendingCommands special commands in a row. So right before
+# we would dispatch the maxPendingCommands'th special command, dispatch a
+# "stay" instead. For example (maxPendingCommands is 4):
+#
+#   - Initially, queue contains [ncom, special, ncom, 5x special]
+#   - Send ncom
+#   - Send special
+#   - Send ncom
+#   - Send special
+#   - At 4 pending commands, so wait.
+#   - Get a watch comc.
+#   - Pop first ncom.
+#   - Now there are between 2 and 3 pending commands; don't know if the oldest
+#     special has been executed yet.
+#   - Send 2x special, bringing us up to [4..5].
+#   - Wait.
+#   - Get a watch comc. Pop the special and the ncom.
+#   - Now we're at [0..2].
+#   - Send one more special: [0..3].
+#   - Now send a "stay", because otherwise we'd go up to [0..4].
+#       - Note: if the next one were an ncom, we'd just send that instead.
+#   - That brings us to [1..4]. But the low bound is still less than 4, so keep
+#     sending more commands.
+
 import collections
 import os
 import platform
@@ -366,21 +414,6 @@ class ClientInterfacer(object):
 
     def _sendCommand(self, encodedCommand):
         self._sendToClient(encodedCommand)
-        # FIXME: Eww, this is a mess! Some (all?) "special" commands don't
-        # actually generate a "watch comc", which means this count is wrong.
-        # And "sync" has the same problem! See test_sync.py... if you submit 40
-        # "issue move" commands in a row, then do a sync, you _immediately_ get
-        # "sync 0" back from the client, then afterward all the commands
-        # resolve. What can we do? How can we time these commands well if
-        # there's no way to know when they've completed? I suppose we could
-        # hack around it by auto-adding a harmless regular command every
-        # (maxPendingCommands-1) or so.... I think "stay" might be a nop? If
-        # that fails, we could always use something like "search", or one of
-        # the silly emote commands that no one ever uses.
-        #   - As best I can tell by looking at the server code
-        #     (server/c_move.c), "stay" is indeed a no-op when the "fire"
-        #     modifier is disabled.
-        #
         # FIXME: This workaround is such a hack!!
         if encodedCommand[len("issue ")].isdigit():
             self.numPendingCommands += 1
