@@ -92,7 +92,7 @@ class ClientInterfacer(object):
     _numCreated = 0
 
     # TODO[ncom]: Rename keyword argument.
-    def __init__(self, maxPendingCommands=6):
+    def __init__(self, targetPendingCommands=6):
         super(ClientInterfacer, self).__init__()
 
         # We use select() for non-blocking reads from stdin, which won't work
@@ -174,14 +174,14 @@ class ClientInterfacer(object):
         # In practice, we don't keep track of _which_ commands are pending,
         # because there's no point. We just keep a count of how many commands
         # are pending so that we can do things like "send more commands up to
-        # maxPendingCommands" or "wait until all pending commands are done".
+        # targetPendingCommands" or "wait until all pending commands are done".
         #
         # INVARIANT: On entry/exit from all public API calls, there are no
         # queuedCommands unless we're maxed out on pending commands. That is:
-        #     self._hasMaxPendingCommands() or len(self.commandQueue) == 0
+        #     self._hasTargetPendingCommands() or len(self.commandQueue) == 0
         self.commandQueue = collections.deque()
         self.pendingCommands = collections.deque()
-        self.maxPendingCommands = maxPendingCommands # TODO[ncom]: Private.
+        self._targetPendingCommands = targetPendingCommands
 
         # Queues for particular types of inputs.
         self.pendingScripttells = collections.deque()
@@ -218,14 +218,14 @@ class ClientInterfacer(object):
     # pending, (3) done.
     #
     # Note: for most purposes you can just use issueCommand. That way there
-    # will always be maxPendingCommands in flight, and the command queue will
-    # never build up a bunch of extra commands.
+    # will always be targetPendingCommands in flight, and the command queue
+    # will never build up a bunch of extra commands.
 
     def queueCommand(self, command, **kwargs):
         """
         Add a new command to the queue. If we're not already at
-        maxPendingCommands, issue commands from the queue until either we are
-        at maxPendingCommands or the queue is empty. Return immediately.
+        targetPendingCommands, issue commands from the queue until either we
+        are at targetPendingCommands or the queue is empty. Return immediately.
 
         If you are not moving items, count can be omitted. If you are moving
         items, then count must be specified: 0 to move all matching items, or
@@ -337,16 +337,15 @@ class ClientInterfacer(object):
         # TODO[ncom]: If so, ensure there's an ncom.
         return self._boundPendingCommandsHigh() > 0
 
-    # TODO[ncom]: Rename this with maxPendingCommands.
-    def hasMaxPendingCommands(self):
+    def atTargetPendingCommands(self):
         """
         Return True if the number of pending commands is definitely as large as
-        the target value (maxPendingCommands), meaning that given the
-        opportunity we would not dispatch more commands from the queue.
+        the target value, meaning that given the opportunity we would not
+        dispatch more commands from the queue.
         """
 
         self._checkInvariants()
-        return self._hasMaxPendingCommands()
+        return self._atTargetPendingCommands()
 
     def numQueuedCommands(self):
         self._checkInvariants()
@@ -356,8 +355,7 @@ class ClientInterfacer(object):
 
     # Allow changing this dynamically because sometimes you want one part of a
     # script to be careful and another part to be fast.
-    # TODO[ncom]: Rename.
-    def setMaxPendingCommands(self, maxPendingCommands):
+    def setTargetPendingCommands(self, targetPendingCommands):
         """
         Change the number of commands that may be pending on the server before
         we start putting commands in the queue. Increasing this value will
@@ -367,7 +365,7 @@ class ClientInterfacer(object):
 
         self._checkInvariants()
 
-        self.maxPendingCommands = maxPendingCommands
+        self._targetPendingCommands = targetPendingCommands
         self._pumpQueue()
 
         self._checkInvariants()
@@ -407,19 +405,19 @@ class ClientInterfacer(object):
     def _pumpQueue(self):
         """
         Immediately send to the server the next few commands from the command
-        queue, until either the queue is empty or there are maxPendingCommands
-        pending commands.
+        queue, until either the queue is empty or there are
+        targetPendingCommands pending commands.
 
         This method is called internally by some other methods to restore the
         following invariant:
-            self._hasMaxPendingCommands() or len(self.commandQueue) == 0
+            self._hasTargetPendingCommands() or len(self.commandQueue) == 0
         """
 
         while self.commandQueue and \
-                self._boundPendingCommandsLow() < self.maxPendingCommands:
+                self._boundPendingCommandsLow() < self._targetPendingCommands:
             self._sendCommand(self.commandQueue.popleft())
 
-        assert self._hasMaxPendingCommands() or len(self.commandQueue) == 0
+        assert self._hasTargetPendingCommands() or len(self.commandQueue) == 0
 
     def _sendCommand(self, command):
         self._sendToClient(command.encode())
@@ -429,14 +427,14 @@ class ClientInterfacer(object):
 
     def _checkInvariants(self):
         # TODO: Call this more consistently.
-        assert self._hasMaxPendingCommands() or len(self.commandQueue) == 0
+        assert self._hasTargetPendingCommands() or len(self.commandQueue) == 0
 
-    def _hasMaxPendingCommands(self):
+    def _hasTargetPendingCommands(self):
         """
-        Same as hasMaxPendingCommands, but doesn't assert the invariants.
+        Same as hasTargetPendingCommands, but doesn't assert the invariants.
         """
 
-        return self._boundPendingCommandsLow() >= self.maxPendingCommands
+        return self._boundPendingCommandsLow() >= self._targetPendingCommands
 
     def _boundPendingCommandsLow(self):
         """
@@ -535,13 +533,13 @@ class ClientInterfacer(object):
         block.
 
         Some examples of handling done by this function:
-          - If we're below maxPendingCommands, then commands are automatically
-            issued from the command queue to get up to maxPendingCommands (or
-            until the queue is empty).
+          - If we're below targetPendingCommands, then commands are
+            automatically issued from the command queue to get up to
+            targetPendingCommands (or until the queue is empty).
+          - Update playerInfo based on any incoming messages with stat info.
           - Misc internal bookkeeping that would otherwise be handled lazily.
             You don't need to call this function for this purpose.
         """
-        # TODO: Also updating based on 'watch stat hp' and similar.
 
         # CLEANUP: Maybe just inline _handlePendingClientInputs here and then
         # call this one internally? I'm not sure there's much benefit to

@@ -1,6 +1,6 @@
 from client_interfacer import ClientInterfacer, Color
 
-cf = ClientInterfacer(maxPendingCommands=100)
+cf = ClientInterfacer(targetPendingCommands=100)
 
 cf.draw("scripttell me the tag of an item to use for the test.")
 cf.waitForScripttell()
@@ -19,7 +19,7 @@ if testItem is None:
 dropCmd   = cf.getDropCommand(testItem)
 pickupCmd = cf.getPickupCommand(testItem)
 for i in range(20):
-    # We set maxPendingCommands high enough that these will all dispatch
+    # We set targetPendingCommands high enough that these will all dispatch
     # immediately.
     cf.queueCommand(dropCmd)
     cf.queueCommand(pickupCmd)
