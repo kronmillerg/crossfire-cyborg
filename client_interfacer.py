@@ -91,7 +91,6 @@ class Color:
 class ClientInterfacer(object):
     _numCreated = 0
 
-    # TODO[ncom]: Rename keyword argument.
     def __init__(self, targetPendingCommands=6):
         super(ClientInterfacer, self).__init__()
 
