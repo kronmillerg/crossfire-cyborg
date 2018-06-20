@@ -178,10 +178,9 @@ class ClientInterfacer(object):
         #
         # INVARIANT: On entry/exit from all public API calls, there are no
         # queuedCommands unless we're maxed out on pending commands. That is:
-        #     self.numPendingCommands >= self.maxPendingCommands or \
-        #         len(self.commandQueue) == 0
+        #     self._hasMaxPendingCommands() or len(self.commandQueue) == 0
         self.commandQueue = collections.deque()
-        self.numPendingCommands = 0 # TODO[ncom]: Make this private.
+        self.pendingCommands = collections.deque()
         self.maxPendingCommands = maxPendingCommands # TODO[ncom]: Private.
 
         # Queues for particular types of inputs.
@@ -313,28 +312,41 @@ class ClientInterfacer(object):
         own, you probably want to use idle() instead of this function.
 
         Postcondition:
-            len(self.commandQueue) == 0 and self.numPendingCommands == 0
+            len(self.commandQueue) == 0 and \\
+                self._boundPendingCommandsHigh() == 0
         """
 
         self._checkInvariants()
 
         # TODO[ncom]: Ensure there's an ncom at the end.
         self._idleUntil(lambda: len(self.commandQueue) == 0 and \
-            self.numPendingCommands == 0)
+            self._boundPendingCommandsHigh() == 0)
 
-        assert len(self.commandQueue) == 0 and self.numPendingCommands == 0
+        assert len(self.commandQueue) == 0 and \
+            self._boundPendingCommandsHigh() == 0
         self._checkInvariants()
 
     ### Check how many commands are in the pipeline ###
 
     def hasAnyPendingCommands(self):
+        """
+        Return True if there might still be pending commands.
+        """
+
         self._checkInvariants()
         # TODO[ncom]: If so, ensure there's an ncom.
-        return self.numPendingCommands > 0
+        return self._boundPendingCommandsHigh() > 0
 
+    # TODO[ncom]: Rename this with maxPendingCommands.
     def hasMaxPendingCommands(self):
+        """
+        Return True if the number of pending commands is definitely as large as
+        the target value (maxPendingCommands), meaning that given the
+        opportunity we would not dispatch more commands from the queue.
+        """
+
         self._checkInvariants()
-        return self.numPendingCommands >= self.maxPendingCommands
+        return self._hasMaxPendingCommands()
 
     def numQueuedCommands(self):
         self._checkInvariants()
@@ -400,25 +412,61 @@ class ClientInterfacer(object):
 
         This method is called internally by some other methods to restore the
         following invariant:
-            self.numPendingCommands >= self.maxPendingCommands or \
-                len(self.commandQueue) == 0
+            self._hasMaxPendingCommands() or len(self.commandQueue) == 0
         """
 
         while self.commandQueue and \
-                self.numPendingCommands < self.maxPendingCommands:
+                self._boundPendingCommandsLow() < self.maxPendingCommands:
             self._sendCommand(self.commandQueue.popleft())
 
-        assert self.numPendingCommands >= self.maxPendingCommands or \
-            len(self.commandQueue) == 0
+        assert self._hasMaxPendingCommands() or len(self.commandQueue) == 0
 
     def _sendCommand(self, command):
         self._sendToClient(command.encode())
+        # TODO[ncom]: Do this unconditionally, count the bounds correctly.
         if command.getsComc:
-            self.numPendingCommands += 1
+            self.pendingCommands.append(command)
 
     def _checkInvariants(self):
-        assert self.numPendingCommands >= self.maxPendingCommands or \
-            len(self.commandQueue) == 0
+        # TODO: Call this more consistently.
+        assert self._hasMaxPendingCommands() or len(self.commandQueue) == 0
+
+    def _hasMaxPendingCommands(self):
+        """
+        Same as hasMaxPendingCommands, but doesn't assert the invariants.
+        """
+
+        return self._boundPendingCommandsLow() >= self.maxPendingCommands
+
+    def _boundPendingCommandsLow(self):
+        """
+        Return a lower bound on the number of pending commands.
+
+        Really this just means the smallest possible number of commands that
+        could still be pending as of the last time we
+        _handlePendingClientInputs()ed. It's always possible that more commands
+        have resolved but we haven't yet seen the "watch comc".
+        """
+
+        return self._boundPendingCommandsBoth()[0]
+
+    def _boundPendingCommandsHigh(self):
+        """
+        Return an upper bound on the number of pending commands.
+        """
+
+        return self._boundPendingCommandsBoth()[1]
+
+    def _boundPendingCommandsBoth(self):
+        """
+        Return a pair (lower, upper) of bounds on the number of pending
+        commands.
+        """
+
+        # TODO[ncom]: Fix this once we actually handle non-ncom commands
+        # properly.
+        count = len(self.pendingCommands)
+        return (count, count)
 
     ########################################################################
     # Generating specific types of commands.
@@ -427,10 +475,10 @@ class ClientInterfacer(object):
     # or whatever if you want to issue them.
 
     # FIXME[ncom]: Be careful using these! They don't actually generate "watch
-    # comc" responses when they resolve, so currently they get
-    # numPendingCommands out of sync. For example, don't write a script that
-    # issues a long sequence of getMoveCommand()s, because it won't time itself
-    # right. *cough* water_of_the_wise.py *cough*.
+    # comc" responses when they resolve, so currently they're not properly
+    # tracked in pendingCommands. For example, don't write a script that issues
+    # a long sequence of getMoveCommand()s, because it won't time itself right.
+    # *cough* water_of_the_wise.py *cough*.
 
     def getMarkCommand(self, item):
         return Command("mark %d" % item.tag, isSpecial=True)
@@ -699,13 +747,14 @@ class ClientInterfacer(object):
         # simple scripts. Also, this way we don't have to hide the code for it
         # in with the other "watch" handling, which is substantially different.
         if msg.startswith("watch comc"):
-            if self.numPendingCommands > 0:
-                self.numPendingCommands -= 1
+            if self.pendingCommands:
+                # TODO[ncom]: Actually pop up to the first that getsComc.
+                self.pendingCommands.popleft()
                 self._pumpQueue()
-            # if self.numPendingCommands == 0, then just swallow the message.
+            # if self.pendingCommands is empty, then just swallow the message.
             # This can happen if the player executes some commands while we're
-            # running (perhaps while the script is idle). There's no other use
-            # for "watch comc" messages, so still don't store them.
+            # listening (perhaps while the script is idle). There's no other
+            # use for "watch comc" messages, so still don't store them.
             return
 
         # Do watch and request next
