@@ -89,11 +89,6 @@ class Color:
 
 
 class ClientInterfacer(object):
-    # Note: long ago I tried using a DEFAULT_COUNT of 0 and something went
-    # wrong, though I don't remember what. So use a DEFAULT_COUNT of 1 and just
-    # trust the user to specify the count when moving items.
-    DEFAULT_COUNT = 1
-
     _numCreated = 0
 
     # TODO[ncom]: Rename keyword argument.
@@ -227,7 +222,7 @@ class ClientInterfacer(object):
     # will always be maxPendingCommands in flight, and the command queue will
     # never build up a bunch of extra commands.
 
-    def queueCommand(self, command, count=None):
+    def queueCommand(self, command, **kwargs):
         """
         Add a new command to the queue. If we're not already at
         maxPendingCommands, issue commands from the queue until either we are
@@ -237,22 +232,22 @@ class ClientInterfacer(object):
         items, then count must be specified: 0 to move all matching items, or
         else the number of items to move.
 
-        Normally command is just a string. However, you can also pass a
-        Command; in that case, if the 'count' argument to this function is
-        omitted, then the Command's count will be used. This allows you to
-        store an entire set of arguments for this function in a single
-        object -- for example, to have a list of commands that will be
-        executed. (See recipe.loopCommands for an example where this comes up.)
+        Normally command is just a string, and you can pass the same keyword
+        arguments to this function that you would pass when creating a Command.
+        But as an alternative, you can pass an actual Command object to this
+        function, in which case any keyword arguments will be ignored.
         """
 
         self._checkInvariants()
 
-        self.commandQueue.append(self._encodeCommand(command, count))
+        if not isinstance(command, Command):
+            command = Command(command, **kwargs)
+        self.commandQueue.append(command)
         self._pumpQueue()
 
         self._checkInvariants()
 
-    def issueCommand(self, command, count=None, maxQueueSize=0):
+    def issueCommand(self, command, maxQueueSize=0, **kwargs):
         """
         Same as queueCommand, but block until the command has actually been
         submitted to the server (which may require some commands ahead of it to
@@ -268,12 +263,12 @@ class ClientInterfacer(object):
 
         self._checkInvariants()
 
-        self.queueCommand(command, count=count)
+        self.queueCommand(command, **kwargs)
         self.issueQueuedCommands(maxQueueSize=maxQueueSize)
 
         self._checkInvariants()
 
-    def execCommand(self, command, count=None):
+    def execCommand(self, command, **kwargs):
         """
         Same as queueCommand, but block until the command has been fully
         executed (that is, until the server has confirmed that it's done).
@@ -281,7 +276,7 @@ class ClientInterfacer(object):
 
         self._checkInvariants()
 
-        self.queueCommand(command, count=count)
+        self.queueCommand(command, **kwargs)
         self.flushCommands()
 
         self._checkInvariants()
@@ -416,23 +411,10 @@ class ClientInterfacer(object):
         assert self.numPendingCommands >= self.maxPendingCommands or \
             len(self.commandQueue) == 0
 
-    def _sendCommand(self, encodedCommand):
-        self._sendToClient(encodedCommand)
-        # FIXME[ncom]: This workaround is such a hack!!
-        if encodedCommand[len("issue ")].isdigit():
+    def _sendCommand(self, command):
+        self._sendToClient(command.encode())
+        if command.getsComc:
             self.numPendingCommands += 1
-
-    def _encodeCommand(self, command, count):
-        if isinstance(command, Command):
-            if command.isSpecial:
-                # Omit <count> <must_send> prefix.
-                return "issue %s" % (command.commandString)
-            if count is None:
-                count = command.count
-            command = command.commandString
-        if count is None:
-            count = self.DEFAULT_COUNT
-        return "issue %s 1 %s" % (count, command)
 
     def _checkInvariants(self):
         assert self.numPendingCommands >= self.maxPendingCommands or \
@@ -1115,10 +1097,33 @@ class PlayerInfo:
 # One-off classes used by ClientInterfacer.
 
 class Command:
+    # Note: long ago I tried using a DEFAULT_COUNT of 0 and something went
+    # wrong, though I don't remember what. So use a DEFAULT_COUNT of 1 and just
+    # trust the user to specify the count when moving items.
+    DEFAULT_COUNT = 1
+
     def __init__(self, commandString, count=None, isSpecial=False):
         self.commandString = commandString
         self.count         = count
         self.isSpecial     = isSpecial
+
+    @property
+    def getsComc(self):
+        """
+        Will a "comc" acknowledgement be sent for this command?
+        """
+
+        return not self.isSpecial
+
+    def encode(self):
+        ret = "issue "
+        if not self.isSpecial:
+            count = self.count
+            if count is None:
+                count = Command.DEFAULT_COUNT
+            ret += "%s 1 " % count
+        ret += self.commandString
+        return ret
 
 
 # Actual classes that more or less make sense on their own.
