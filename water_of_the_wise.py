@@ -13,9 +13,7 @@ cf = ClientInterfacer()
 itemsOn   = cf.getItemsOfType("on")
 cauldrons = []
 for item in itemsOn:
-    # FIXME
-    if item.name == "rucksack":
-    # if item.name == "cauldron":
+    if item.name == "cauldron":
         cauldrons.append(item)
 if len(cauldrons) != 1:
     cf.logError("Expected 1 cauldron on ground, got %d" % len(cauldrons))
@@ -43,11 +41,12 @@ if cauldron.open:
     commands.append(cf.getApplyCommand(cauldron))
 commands.append(cf.getApplyCommand(cauldron))
 
-# FIXME: while
-if waters.num >= 7:
+remaining = waters.num
+while remaining >= 7:
     commands.append(cf.getMoveCommand(waters, cauldron, count=7))
     commands.append("use_skill alchemy")
     commands.append(Command("get all", count=0))
+    remaining -= 7
 
 commands.append(cf.getApplyCommand(cauldron))
 

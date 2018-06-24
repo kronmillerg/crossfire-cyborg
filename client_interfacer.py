@@ -1,51 +1,3 @@
-
-# FIXME[ncom]: Eww, this is a mess! Some (all?) "special" commands don't
-# actually generate a "watch comc", which means this count is wrong.  And
-# "sync" has the same problem! See test_sync.py... if you submit 40 "issue
-# move" commands in a row, then do a sync, you _immediately_ get "sync 0" back
-# from the client, then afterward all the commands resolve. What can we do? How
-# can we time these commands well if there's no way to know when they've
-# completed? I suppose we could hack around it by auto-adding a harmless
-# regular command every (maxPendingCommands-1) or so.... I think "stay" might
-# be a nop? If that fails, we could always use something like "search", or one
-# of the silly emote commands that no one ever uses.
-#   - As best I can tell by looking at the server code (server/c_move.c),
-#     "stay" is indeed a no-op when the "fire" modifier is disabled.
-#
-# Okay, here's the plan. Instead of just a numPendingCommands, track the full
-# list of which ones are ncom and which are special. When we get a watch comc
-# (or sync by 1 more...), pop all of the leading specials (if any) plus one
-# ncom. Reinterpret the maxPendingCommands as "we'll try to have at least this
-# many pending commands at a time, up to the whole queue." At a given time, we
-# have a lower bound and upper bound on how many commands are queued. If the
-# upper bound goes below maxPendingCommands, then dispatch more commands from
-# the queue.  As far as spacing of "stay"s, I propose that we make the rule
-# that we add just enough stays so that you can't wind up in a situation where
-# 0 pending commands and maxPendingCommands look the same -- that is, you never
-# have as many as maxPendingCommands special commands in a row. So right before
-# we would dispatch the maxPendingCommands'th special command, dispatch a
-# "stay" instead. For example (maxPendingCommands is 4):
-#
-#   - Initially, queue contains [ncom, special, ncom, 5x special]
-#   - Send ncom
-#   - Send special
-#   - Send ncom
-#   - Send special
-#   - At 4 pending commands, so wait.
-#   - Get a watch comc.
-#   - Pop first ncom.
-#   - Now there are between 2 and 3 pending commands; don't know if the oldest
-#     special has been executed yet.
-#   - Send 2x special, bringing us up to [4..5].
-#   - Wait.
-#   - Get a watch comc. Pop the special and the ncom.
-#   - Now we're at [0..2].
-#   - Send one more special: [0..3].
-#   - Now send a "stay", because otherwise we'd go up to [0..4].
-#       - Note: if the next one were an ncom, we'd just send that instead.
-#   - That brings us to [1..4]. But the low bound is still less than 4, so keep
-#     sending more commands.
-
 import collections
 import os
 import platform
@@ -317,7 +269,7 @@ class ClientInterfacer(object):
 
         self._checkInvariants()
 
-        # TODO[ncom]: Ensure there's an ncom at the end.
+        self._ensureCanWaitOnPendingCommands()
         self._idleUntil(lambda: len(self.commandQueue) == 0 and \
             self._boundPendingCommandsHigh() == 0)
 
@@ -333,7 +285,14 @@ class ClientInterfacer(object):
         """
 
         self._checkInvariants()
-        # TODO[ncom]: If so, ensure there's an ncom.
+        # Note: I was tempted to call _ensureCanWaitOnPendingCommands here, but
+        # I don't think it's necessary. The rule I've decided on is that any
+        # function within the ClientInterfacer that waits on a condition that
+        # _might_ be affected by pendingCommands needs to call
+        # _ensureCanWaitOnPendingCommands. So if a function within the
+        # ClientInterfacer waits based on this function, it's that function's
+        # responsibility to call _ensureCanWaitOnPendingCommands, not this
+        # function's.
         return self._boundPendingCommandsHigh() > 0
 
     def atTargetPendingCommands(self):
@@ -404,7 +363,7 @@ class ClientInterfacer(object):
     def _pumpQueue(self):
         """
         Immediately send to the server the next few commands from the command
-        queue, until either the queue is empty or there are
+        queue, until either the queue is empty or there are (at least)
         targetPendingCommands pending commands.
 
         This method is called internally by some other methods to restore the
@@ -412,17 +371,161 @@ class ClientInterfacer(object):
             self._hasTargetPendingCommands() or len(self.commandQueue) == 0
         """
 
-        while self.commandQueue and \
-                self._boundPendingCommandsLow() < self._targetPendingCommands:
-            self._sendCommand(self.commandQueue.popleft())
+        lowBound    = self._boundPendingCommandsLow()
+        anyGetsComc = any(cmd.getsComc for cmd in self.pendingCommands)
+        assert anyGetsComc == (lowBound != 0)
 
+        # Largest number of consecutive commands we'll send that aren't going
+        # to be acknowledged by the server. See the large comment in the loop
+        # for how this is used.
+        maxConsecutiveNonComc = max(self._targetPendingCommands - 1, 1)
+
+        sentAny = False
+        while self.commandQueue and lowBound < self._targetPendingCommands:
+            nextCommand = self.commandQueue.popleft()
+
+            # This next part is a workaround for an annoying quirk of CrossFire
+            # that I discovered the hard way. The short version is that certain
+            # special[*] commands don't get a "comc" acknowledgement from the
+            # server, which can mess up our timing if we're not careful. This
+            # applies to both the "watch comc" and the "sync" methods of
+            # timing. For example, if you send 40 "issue move" commands to the
+            # server and then an "east", then...
+            #   - You won't get a "watch comc" for a while as all the moves
+            #     resolve, until finally you get just one "watch comc" when the
+            #     "east" resolves.
+            #   - If you try to sync then you'll immediately get back "sync 1",
+            #     even though the moves have not resolved yet.
+            #
+            # I work around this by (1) taking into account which pending
+            # commands are expected to get a "comc" when resolving "watch comc"
+            # messages (see _handleClientInput), and (2) ensuring that we don't
+            # send an unbounded number of non-getsComc commands to the server
+            # in a row by interspersing no-ops every so often (the code below
+            # this comment). For (2), the rule I choose is that we never send
+            # as many as self._targetPendingCommands non-getsComc commands in a
+            # row -- so if we've already sent (self._targetPendingCommands - 1)
+            # non-getsComc commands and the next one would also be
+            # non-getsComc, then we first send a no-op for the sake of timing.
+            # The one exception is if _targetPendingCommands is 1, in which
+            # case we'll allow 1 non-getsComc comand in a row (because we have
+            # to) but not 2.
+            #
+            # (The motivation for this rule is that it means I don't allow us
+            # to get into a situation where 0 pending commands and
+            # _targetPendingCommands are indistinguishable.)
+            #
+            # [*] For those somewhat knowledgeable about the CrossFire source
+            #     itself, I believe the important distinction here is that only
+            #     commands which are sent to the server as "ncom" (new command)
+            #     get "comc" acknowledgements.
+            if not anyGetsComc and not nextCommand.getsComc and \
+                    len(self.pendingCommands) >= maxConsecutiveNonComc:
+                assert lowBound == 0
+                self._sendNoOp()
+                anyGetsComc = True
+                lowBound    = 1
+
+            # If _targetPendingCommands is 1 and we just sent a noop, then we
+            # may already be at _targetPendingCommands. In that case maybe we
+            # could skip this part and not actually send that command -- since
+            # I special-cased the _targetPendingCommands == 1 case above, I
+            # don't _think_ that would cause us to hang. But it seems safer to
+            # just go ahead and always send one real command in that case, so
+            # that we can say that if we send a command at all, then we
+            # actually make progress on the commandQueue.
+            self._sendCommand(nextCommand)
+            sentAny = True
+            if anyGetsComc:
+                lowBound += 1
+
+        # Check our postcondition.
         assert self._hasTargetPendingCommands() or len(self.commandQueue) == 0
+
+        if sentAny:
+            # In this case, make sure that we only added the minimum that we
+            # needed to. Normally this means that _boundPendingCommandsLow is
+            # at most _targetPendingCommands. However, if
+            # _targetPendingCommands is 1, then we may have sent a no-op as
+            # well as a real command, so the lower bound might be as large as
+            # 2.
+            assert self._boundPendingCommandsLow() <= \
+                max(2, self._targetPendingCommands)
+
+        return
+
+        ########
+
+        # TODO: Delete this.
+        # Older attempt at implementing this, split up and much more complex,
+        # code-wise.
+
+        # lowBound    = self._boundPendingCommandsLow()
+        # anyGetsComc = any(cmd.getsComc for cmd in self.pendingCommands)
+
+        # if not anyGetsComc:
+        #     assert lowBound == 0
+        #     numToAdd = self._targetPendingCommands \
+        #         - len(self.pendingCommands) - 1
+        #     # Note that this choice of rule means that we can always add the
+        #     assert lowBound + numToAdd + 1 <= self._targetPendingCommands
+        #     while numToAdd > 0:
+        #         if not self.commandQueue:
+        #             return
+        #         nextCommand = self.commandQueue.popleft()
+        #         self._sendCommand(nextCommand)
+        #         if nextCommand.getsComc:
+        #             numToAdd
+        #         numToAdd -= 1
+
+    def _ensureCanWaitOnPendingCommands(self):
+        """
+        Ensure that it is safe to wait until a pending command resolves. If it
+        is not already safe, this is accomplished by sending a no-op command to
+        the server.
+
+        Important: any function within the ClientInterfacer that waits on a
+        condition that _might_ be affected by pendingCommands needs to call
+        this function first. Otherwise, we could hang waiting for a "watch
+        comc" that will never arrive!
+        """
+
+        if not self._canWaitOnPendingCommands():
+            self._sendNoOp()
+
+        assert self._canWaitOnPendingCommands()
+
+    def _canWaitOnPendingCommands(self):
+        """
+        Return True if it is safe to wait until a pending command resolves.
+          - If there are no pending commands, then it is safe to wait because
+            any attempt to wait will just return immediately.
+          - Elif there is at least one pending command that getsComc, then it
+            is safe to wait because eventually we'll get a comc for that
+            command.
+          - Else there is at least one pending command, but no pending command
+            getsComc. In this case it is NOT safe to wait, because we may never
+            get a comc and therefore the script could hang.
+        """
+
+        return len(self.pendingCommands) == 0 or \
+            any(cmd.getsComc for cmd in self.pendingCommands)
+
+    def _sendNoOp(self):
+        """
+        Send a no-op command to the server.
+        """
+
+        # Normally "stay" is used for "stay fire", which is definitely not a
+        # no-op. But you can also send "stay" as its own command (without the
+        # "fire" modifier). The server recognizes it as a directional command,
+        # but doesn't actually do anything with it (aside from sending back a
+        # comc). See server/c_move.c, function "command_stay".
+        self._sendCommand(Command("stay"))
 
     def _sendCommand(self, command):
         self._sendToClient(command.encode())
-        # TODO[ncom]: Do this unconditionally, count the bounds correctly.
-        if command.getsComc:
-            self.pendingCommands.append(command)
+        self.pendingCommands.append(command)
 
     def _checkInvariants(self):
         # TODO: Call this more consistently.
@@ -445,14 +548,24 @@ class ClientInterfacer(object):
         have resolved but we haven't yet seen the "watch comc".
         """
 
-        return self._boundPendingCommandsBoth()[0]
+        # Count how many pending commands at the front of the queue are
+        # "uncertain", in the sense that we wouldn't get an acknowledgement for
+        # them anyway so we don't know if they've resolved.
+        numUncertain = 0
+        for x in self.pendingCommands:
+            if x.getsComc:
+                break
+            else:
+                numUncertain += 1
+
+        return len(self.pendingCommands) - numUncertain
 
     def _boundPendingCommandsHigh(self):
         """
         Return an upper bound on the number of pending commands.
         """
 
-        return self._boundPendingCommandsBoth()[1]
+        return len(self.pendingCommands)
 
     def _boundPendingCommandsBoth(self):
         """
@@ -460,22 +573,14 @@ class ClientInterfacer(object):
         commands.
         """
 
-        # TODO[ncom]: Fix this once we actually handle non-ncom commands
-        # properly.
-        count = len(self.pendingCommands)
-        return (count, count)
+        return (self._boundPendingCommandsLow(),
+                self._boundPendingCommandsHigh())
 
     ########################################################################
     # Generating specific types of commands.
 
     # Note that you have to actually pass the returned Commands to queueCommand
     # or whatever if you want to issue them.
-
-    # FIXME[ncom]: Be careful using these! They don't actually generate "watch
-    # comc" responses when they resolve, so currently they're not properly
-    # tracked in pendingCommands. For example, don't write a script that issues
-    # a long sequence of getMoveCommand()s, because it won't time itself right.
-    # *cough* water_of_the_wise.py *cough*.
 
     def getMarkCommand(self, item):
         return Command("mark %d" % item.tag, isSpecial=True)
@@ -522,6 +627,17 @@ class ClientInterfacer(object):
         """
 
         self._checkInvariants()
+        # We are waiting for "something" to happen. One possible thing that
+        # might happen is that the next pendingCommand resolves. This means
+        # that this wait is potentially affected by pending commands, so we
+        # need to ensure that it's safe to wait on pending commands.
+        #
+        # Note: the only user-visible functions that can wait on a condition
+        # are idle() itself and various functions that call idle() (via
+        # _idleUntil). So an _ensureCanWaitOnPendingCommands() here is enough
+        # to insulate the user from any concerns about
+        # _canWaitOnPendingCommands().
+        self._ensureCanWaitOnPendingCommands()
         self._waitForClientInput(timeout=timeout)
         self._handlePendingClientInputs()
         self._checkInvariants()
@@ -745,8 +861,11 @@ class ClientInterfacer(object):
         # in with the other "watch" handling, which is substantially different.
         if msg.startswith("watch comc"):
             if self.pendingCommands:
-                # TODO[ncom]: Actually pop up to the first that getsComc.
-                self.pendingCommands.popleft()
+                # See large comment in _pumpQueue for why this is necessary.
+                while self.pendingCommands:
+                    cmd = self.pendingCommands.popleft()
+                    if cmd.getsComc:
+                        break
                 self._pumpQueue()
             # if self.pendingCommands is empty, then just swallow the message.
             # This can happen if the player executes some commands while we're
@@ -1153,6 +1272,8 @@ class Command:
         self.count         = count
         self.isSpecial     = isSpecial
 
+    # See the large comment in ClientInterfacer._pumpQueue for an explanation
+    # of why this property is necessary.
     @property
     def getsComc(self):
         """
