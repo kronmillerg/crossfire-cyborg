@@ -452,32 +452,6 @@ class ClientInterfacer(object):
             assert self._boundPendingCommandsLow() <= \
                 max(2, self._targetPendingCommands)
 
-        return
-
-        ########
-
-        # TODO: Delete this.
-        # Older attempt at implementing this, split up and much more complex,
-        # code-wise.
-
-        # lowBound    = self._boundPendingCommandsLow()
-        # anyGetsComc = any(cmd.getsComc for cmd in self.pendingCommands)
-
-        # if not anyGetsComc:
-        #     assert lowBound == 0
-        #     numToAdd = self._targetPendingCommands \
-        #         - len(self.pendingCommands) - 1
-        #     # Note that this choice of rule means that we can always add the
-        #     assert lowBound + numToAdd + 1 <= self._targetPendingCommands
-        #     while numToAdd > 0:
-        #         if not self.commandQueue:
-        #             return
-        #         nextCommand = self.commandQueue.popleft()
-        #         self._sendCommand(nextCommand)
-        #         if nextCommand.getsComc:
-        #             numToAdd
-        #         numToAdd -= 1
-
     def _ensureCanWaitOnPendingCommands(self):
         """
         Ensure that it is safe to wait until a pending command resolves. If it
