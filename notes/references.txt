@@ -1,0 +1,12 @@
+CrossFire source:
+    https://sourceforge.net/p/crossfire/code/HEAD/tree/client/trunk/
+    https://sourceforge.net/p/crossfire/code/HEAD/tree/server/trunk/
+
+Scripting reference:
+    http://wiki.metalforge.net/doku.php/client_side_scripting:client_scripting_interface-basic_howto
+
+Local paths to some interesting game files:
+    /usr/share/games/crossfire/           -- top level dir
+    /usr/share/games/crossfire/maps/      -- maps
+    /usr/share/games/crossfire/archetypes -- item archetypes
+    /usr/share/games/crossfire/formulae   -- alchemical formulae

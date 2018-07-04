@@ -1,14 +1,6 @@
-To browse client source code:
-
-    https://sourceforge.net/p/crossfire/code/HEAD/tree/client/trunk/
-
-Basically the only reference guide I've found:
-
-    http://wiki.metalforge.net/doku.php/client_side_scripting:client_scripting_interface-basic_howto
-
-Though TBH, at this point the easiest way for me to figure out how the
-scripting interface works is by reading the relevant parts of the client source
-code :thinking:... basically see common/script.c.
+TBH, at this point the easiest way for me to figure out how the scripting
+interface works is by reading the relevant parts of the client source code
+:thinking:... basically see common/script.c.
 
 Misc notes:
   - Possibly "watch stat hp" doesn't work? You might need to just request it
@@ -93,16 +85,4 @@ Manipulating items directly:
     single byte, either '\x00' or '\x01'. When your script does an "issue
     lock", the client translates it, but "monitor" does not, so if you monitor
     lock and unlock commands, you'll just see garbage.
-
-
-
-If you want local information about items from a server installation, useful
-files are in:
-
-    /usr/share/games/crossfire
-
-(at least on Ubuntu-like systems). A couple of particularly useful files:
-
-    /usr/share/games/crossfire/formulae   -- alchemical formulae
-    /usr/share/games/crossfire/archetypes -- item archetypes
 
