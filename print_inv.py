@@ -30,7 +30,8 @@ for item in inv:
     if item.open:
         name += " (open)"
     if item.num != 1:
-        name = name + " <stack of %d>" % item.num
+        name += (" <stack of %d>" % item.num)
+    name += " <client_type %d>" % item.clientType
     color = Color.NAVY
     if item.applied:
         color = Color.BLACK
