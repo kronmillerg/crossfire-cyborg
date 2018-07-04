@@ -9,9 +9,9 @@ import glob
 import os
 import sys
 
-import client_interfacer
+from lib.client_interfacer import ClientInterfacer
 
-cf = client_interfacer.ClientInterfacer()
+cf = ClientInterfacer()
 
 DIR = "travelData"
 SERVER = "metalforge"

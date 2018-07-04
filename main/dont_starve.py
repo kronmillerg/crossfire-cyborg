@@ -4,7 +4,7 @@ until the player's hunger runs below 200, then summons and eats a waybread.
 Useful to leave running while afk.
 """
 
-from client_interfacer import ClientInterfacer
+from lib.client_interfacer import ClientInterfacer
 
 cf = ClientInterfacer()
 cf.watchStats()

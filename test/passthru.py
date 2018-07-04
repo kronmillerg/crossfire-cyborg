@@ -1,4 +1,4 @@
-from client_interfacer import ClientInterfacer, Color
+from lib.client_interfacer import ClientInterfacer, Color
 
 cf = ClientInterfacer()
 

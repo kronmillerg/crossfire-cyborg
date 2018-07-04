@@ -1,4 +1,4 @@
-from recipe import loopCommands, Command
+from lib.recipe import loopCommands, Command
 
 # Yes, this is basically the same as thaumaturgy.py.
 loopCommands([

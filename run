@@ -1,0 +1,7 @@
+#!/bin/bash
+
+module="$1"
+shift
+
+python -m "main.$module" "$@"
+

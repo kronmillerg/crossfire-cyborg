@@ -6,9 +6,9 @@ Intentionally does the loop by hand, even though it's really another
 recipe.loopCommands script, because that's more in keeping with its purpose.
 """
 
-import client_interfacer
+from lib.client_interfacer import ClientInterfacer
 
-cf = client_interfacer.ClientInterfacer()
+cf = ClientInterfacer()
 
 MAX_ITERS = 20
 

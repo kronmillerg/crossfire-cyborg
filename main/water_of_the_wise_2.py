@@ -1,11 +1,14 @@
 """
 Create water of the wise by alchemy.
+
+Lower-tech version of the script, works by renaming the ingredient and using
+"drop 7 ingred1" rather than issuing true "move" commands.
 """
 
 import sys
 
-from client_interfacer import ClientInterfacer, Command
-from recipe import runCommandSequence
+from lib.client_interfacer import ClientInterfacer, Command
+from lib.recipe import runCommandSequence
 
 cf = ClientInterfacer()
 
@@ -27,12 +30,19 @@ for item in inv:
     if item.name.endswith(" water") or item.name.endswith(" waters"):
         if waters is None or item.num > waters.num:
             waters = item
+    if "ingred" in item.name:
+        cf.logError("You already have an item matching \"ingred\"; I'm not "
+            "programmed to uniquify names well enough to deal with this.")
+        sys.exit(0)
 if waters is None:
     cf.logError("You don't have any water.")
     sys.exit(0)
 
 # TODO: Generator instead of list.
 commands = []
+
+commands.append(cf.getMarkCommand(waters))
+commands.append("rename to <ingred1>")
 
 # If it's already open, probably we can skip these. But just in case it makes a
 # difference, double-apply the cauldron so that it's the most recently opened
@@ -43,7 +53,7 @@ commands.append(cf.getApplyCommand(cauldron))
 
 remaining = waters.num
 while remaining >= 7:
-    commands.append(cf.getMoveCommand(waters, cauldron, count=7))
+    commands.append(Command("drop ingred1", count=7))
     commands.append("use_skill alchemy")
     commands.append(Command("get all", count=0))
     remaining -= 7
@@ -51,4 +61,9 @@ while remaining >= 7:
 commands.append(cf.getApplyCommand(cauldron))
 
 runCommandSequence(commands, cf=cf)
+
+cf.issueCommand(cf.getMarkCommand(waters))
+cf.issueCommand("rename to <>")
+cf.flushCommands()
+cf.draw("Actually done.")
 

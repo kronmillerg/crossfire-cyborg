@@ -1,6 +1,6 @@
-import client_interfacer
+from lib.client_interfacer import ClientInterfacer
 
-cf = client_interfacer.ClientInterfacer()
+cf = ClientInterfacer()
 
 cf._sendToClient("monitor")
 

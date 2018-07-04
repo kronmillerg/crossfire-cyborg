@@ -1,4 +1,4 @@
-from recipe import loopCommands, Command
+from lib.recipe import loopCommands, Command
 
 # TODO: Once we can watch stats, change this to meditate until mana is (almost)
 # full.

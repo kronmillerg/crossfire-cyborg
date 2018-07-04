@@ -3,7 +3,7 @@ Really basic test of the inventory subsystem. Request the player's inventory
 once, block until we get a full response, and then print it out.
 """
 
-from client_interfacer import ClientInterfacer, Color
+from lib.client_interfacer import ClientInterfacer, Color
 
 cf = ClientInterfacer()
 

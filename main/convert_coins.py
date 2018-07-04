@@ -6,9 +6,9 @@ knowledge about the layout of that building. Also, assumes there's no one else
 there.
 """
 
-import client_interfacer
+from lib.client_interfacer import ClientInterfacer
 
-cf = client_interfacer.ClientInterfacer()
+cf = ClientInterfacer()
 
 # Get to the northeast corner, so we don't have to examine the level to get our
 # bearings.

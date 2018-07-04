@@ -1,7 +1,8 @@
-import client_interfacer
 import time
 
-cf = client_interfacer.ClientInterfacer()
+from lib.client_interfacer import ClientInterfacer
+
+cf = ClientInterfacer()
 
 for i in range(50+1):
     cf.draw("draw %s hello world" % i, color=i)

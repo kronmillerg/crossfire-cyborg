@@ -5,8 +5,8 @@ Identify items using rods of identify.
 import re
 import sys
 
-from client_interfacer import ClientInterfacer, Command
-from recipe import loopCommands
+from lib.client_interfacer import ClientInterfacer, Command
+from lib.recipe import loopCommands
 
 cf = ClientInterfacer()
 

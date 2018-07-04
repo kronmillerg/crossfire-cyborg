@@ -5,9 +5,9 @@ line arguments to crossfire scripts.
 
 import sys
 
-import client_interfacer
+from lib.client_interfacer import ClientInterfacer
 
-cf = client_interfacer.ClientInterfacer()
+cf = ClientInterfacer()
 
 cf.draw("sys.argv is:")
 for i in range(len(sys.argv)):

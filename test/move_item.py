@@ -5,8 +5,8 @@ reasonable. (Recommend running in DEBUG mode for a better test.)
 
 import sys
 
-from client_interfacer import ClientInterfacer, Command
-from recipe import runCommandSequence
+from lib.client_interfacer import ClientInterfacer, Command
+from lib.recipe import runCommandSequence
 
 cf = ClientInterfacer()
 
