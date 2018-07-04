@@ -1,8 +1,0 @@
-Setup package structure:
-    main/   --  main script directory
-    lib/    --  scripts that are imported
-    test/   --  one-off test scripts, not useful in their own right
-    notes/  --  text files in which I write notes/plans/whatever
-
-Add a script to sort stuff in my apartment based on client_type.
-

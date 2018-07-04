@@ -13,7 +13,7 @@ from lib.client_interfacer import ClientInterfacer
 
 cf = ClientInterfacer()
 
-DIR = "travelData"
+DIR = "data/travel"
 SERVER = "metalforge"
 
 def main():
