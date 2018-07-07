@@ -52,7 +52,10 @@ two of the item.)
 
 Note: a complication is that unequipped items may stack, in which case they'll
 display using their plural name, which might not match the name we have in the
-loadout. I am _not_ going to try to unpluralize names of arbitrary items.
+loadout. Unfortunately, scripts don't seem to have access to singular and
+plural names of items -- only display names. In fact, I'm not even sure the
+client has separate access to singular and plural names. I am _not_ going to
+try to unpluralize display names of arbitrary items.
 
 
 To equip a loadout:
@@ -101,7 +104,157 @@ To save a loadout:
 
 TODO: I think container states are going to be recorded with loadouts; should
 we keep track of "active" vs. "open"?
+  - I vote that we activate any containers that were active, but we don't open
+    any when equipping a loadout. The goal isn't to get the player's inventory
+    into an identical state; the goal is to equip those things that were
+    equipped last time (or equivalent things).
+  - Also, we're only going by name. So if the player has 2 containers of the
+    same name, we wouldn't know which one to open anyway.
+
+TODO: Sigh. The plural-name thing is probably an issue for stashed items. If
+you're carrying two Holy Rings of Valriel, do we just fail to stash them in
+your stealth loadout?
 """
 
-print "draw 3 Not implemented."
+import sys
+
+from lib.client_interfacer import ClientInterfacer
+
+def main():
+    cf = ClientInterfacer()
+
+    args = sys.argv[1:]
+
+    if len(args) == 2 and args[0] == "save":
+        # TODO: stashable list
+        saveLoadout(cf, args[1], [])
+    else:
+        cf.fatal("Not implemented.")
+
+def saveLoadout(cf, name, stashable):
+    loadout = getLoadout(cf, stashable)
+    cf.debugOut(repr(loadout))
+    cf.fatal("Saving not implemented yet.")
+
+def getLoadout(cf, stashable):
+    inv = cf.getInventory()
+
+    # Get lists of some types of items that we're interested in.
+    # Note: for activeItems, we could "get items actv". But we need go through
+    # the whole inventory anyway, so we might as well save an extra client
+    # request and compute that one ourselves.
+    activeItems = []
+    unstashedItems = []
+    lockedContainers = []
+    openContainer = None
+    for item in inv:
+        if item.applied:
+            activeItems.append(item)
+        if item.locked and item.name in stashable:
+            unstashedItems.append(item)
+        if item.locked and isAContainer(item):
+            lockedContainers.append(item)
+        if item.open:
+            assert openContainer is None
+            openContainer = item
+
+    # Now check the contents of every locked container, to determine which
+    # items are stashed. This part is more complicated than you would hope,
+    # because the logic for how containers cycle through "(active)" and
+    # "(active) (open)" is somewhat complicated. This means that it's not
+    # trivial to figure out what state a given container is in after we've
+    # applied some containers, so it's not trivial to figure out how many times
+    # we need to apply that container to get it open. A simpler solution would
+    # be to just sync and do another "request items inv" after every time we
+    # apply a container, but if there are a lot of items in the inventory then
+    # that gets pretty inefficient. I decided to go with the more complicated
+    # solution, but if there are bugs, then we can rethink it. Note that the
+    # worst case for a bug is that we miss some containers and therefore don't
+    # mark some stashed items in the loadout.
+    #
+    # The logic when applying a container seems to be:
+    #   - If the container was not active:
+    #       - Activate it
+    #   - Elif the container was active:
+    #       - Open it
+    #       - If another container was already open:
+    #            - Change that other container to closed and inactive
+    #   - Elif the container was open:
+    #       - Close it
+    #       - Deactivate it
+    stashedItems = []
+
+    # To save us from reasoning about one container closing when we open
+    # another one, start by getting the already-open container down to merely
+    # active.
+    if openContainer is not None:
+        assert openContainer.applied
+        # Active and open
+        cf.issueCommand(cf.getApplyCommand(openContainer))
+        # Inactive and closed
+        cf.issueCommand(cf.getApplyCommand(openContainer))
+        # Active but closed
+        openContainer.open = False
+
+    # Open each locked container and check its contents. One of these may be
+    # the open container, but we reset each one to the state it was in at the
+    # start of this loop, so this doesn't affect the below logic to reopen that
+    # container at the end.
+    for container in lockedContainers:
+        applyCommand = cf.getApplyCommand(container)
+        if container.applied:
+            appliesToOpen  = 1
+            appliesToReset = 2
+        else:
+            appliesToOpen  = 2
+            appliesToReset = 1
+
+        # Open the container.
+        for i in range(appliesToOpen):
+            cf.issueCommand(applyCommand)
+        cf.flushCommands()
+
+        # Get a list of items in it that are stashable.
+        contents = cf.getItemsOfType("cont")
+        for item in contents:
+            if item.name in stashable:
+                stashedItems.append(item)
+
+        # Return the container to its original state.
+        for i in range(appliesToReset):
+            cf.issueCommand(applyCommand)
+
+    # Now reopen the container that was originally open, to get things back to
+    # the way they originally were.
+    if openContainer is not None:
+        # We made a point of leaving the openContainer as active but closed at
+        # the start, so it takes one more apply to reopen it.
+        cf.issueCommand(cf.getApplyCommand(openContainer))
+
+    # The wornNames allow repeats, because the player could be wearing two of
+    # the same ring. The others do not. If an item is all stashed or all
+    # unstashed, then it doesn't matter how _many_ of them were
+    # stashed/unstashed; when equipping the loadout, we're going to
+    # stash/unstash them all. If some of an item are stashed and others are
+    # unstashed, then I don't know what to do anyway, so it still doesn't
+    # matter how many are in each category.
+    wornNames      = sorted([item.name for item in activeItems])
+    stashedNames   = set(   [item.name for item in stashedItems])
+    unstashedNames = set(   [item.name for item in unstashedItems])
+
+    for name in stashedNames.intersection(unstashedNames):
+        cf.logWarning("Item %r is both stashed and unstashed." % name)
+
+    return {
+            "worn"      : wornNames,
+            "stashed"   : sorted(stashedNames),
+            "unstashed" : sorted(unstashedNames),
+        }
+
+# TODO: Create a lib/ file for known clientTypes.
+def isAContainer(item):
+    return item.clientType == 51
+
+if __name__ == "__main__":
+    main()
 

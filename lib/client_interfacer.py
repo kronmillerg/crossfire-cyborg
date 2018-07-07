@@ -1317,8 +1317,38 @@ class Item:
     @property
     def invUpdated  (self): return self._flagBit(0x0001)
 
+    # Properties for setting the flag bits. Useful if you're updating Item
+    # objects as you move the actual items around, to avoid having to re-query
+    # for the whole list.
+    @unidentified.setter
+    def unidentified(self, val): return self._setFlagBit(0x0200, val)
+    @magical.setter
+    def magical     (self, val): return self._setFlagBit(0x0100, val)
+    @cursed.setter
+    def cursed      (self, val): return self._setFlagBit(0x0080, val)
+    @damned.setter
+    def damned      (self, val): return self._setFlagBit(0x0040, val)
+    @unpaid.setter
+    def unpaid      (self, val): return self._setFlagBit(0x0020, val)
+    @locked.setter
+    def locked      (self, val): return self._setFlagBit(0x0010, val)
+    @applied.setter
+    def applied     (self, val): return self._setFlagBit(0x0008, val)
+    @open.setter
+    def open        (self, val): return self._setFlagBit(0x0004, val)
+    @wasOpen.setter
+    def wasOpen     (self, val): return self._setFlagBit(0x0002, val)
+    @invUpdated.setter
+    def invUpdated  (self, val): return self._setFlagBit(0x0001, val)
+
     def _flagBit(self, bit):
         return (self.flags & bit) != 0
+
+    def _setFlagBit(self, flag, val):
+        if val:
+            self.flags |= flag
+        else:
+            self.flags = self.flags & ~flag
 
 
 def checkPrefix(s, prefix):

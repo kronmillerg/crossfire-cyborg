@@ -59,6 +59,8 @@ Item information:
     for when you drop or pick up an item come through as something like:
         watch item2 ## bytes unparsed: 00 00 0c 6f [...]
     In other words, a bunch of totally unparsed bytes encoded in hex.
+  - Also, note that "request items cont" gets a list of items in the _open_
+    container (of which there can be only one), not just the active container.
 
 Manipulating items directly:
   - Use "monitor" then click on things to see the syntax.
