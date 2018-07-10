@@ -119,6 +119,13 @@ your stealth loadout?
 import sys
 
 from lib.client_interfacer import ClientInterfacer
+from lib.datafile import readFile
+from lib.datafile import writeFile
+
+FILE_SKELETON = {
+        "loadouts"  : {},
+        "stashable" : [],
+    }
 
 def main():
     cf = ClientInterfacer()
@@ -132,9 +139,12 @@ def main():
         cf.fatal("Not implemented.")
 
 def saveLoadout(cf, name, stashable):
-    loadout = getLoadout(cf, stashable)
-    cf.debugOut(repr(loadout))
-    cf.fatal("Saving not implemented yet.")
+    newLoadout = getLoadout(cf, stashable)
+    cf.debugOut(repr(newLoadout))
+    filename = getLoadoutFilename(cf)
+    loadoutData = readFile("loadout", filename, default=FILE_SKELETON)
+    loadoutData["loadouts"]["name"] = newLoadout
+    writeFile("loadout", filename, loadoutData)
 
 def getLoadout(cf, stashable):
     inv = cf.getInventory()
@@ -250,6 +260,10 @@ def getLoadout(cf, stashable):
             "stashed"   : sorted(stashedNames),
             "unstashed" : sorted(unstashedNames),
         }
+
+def getLoadoutFilename(cf):
+    assert cf.playerInfo.name is not None
+    return str(cf.playerInfo.name).lower() + ".json"
 
 # TODO: Create a lib/ file for known clientTypes.
 def isAContainer(item):

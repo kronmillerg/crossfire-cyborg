@@ -12,6 +12,7 @@ subdirectory, so you can't accidentally write your files in the base data/
 directory.
 """
 
+import errno
 import json
 import os
 
@@ -86,6 +87,7 @@ def writeFile(subdir, name, value):
     """
 
     fname = _getFilename(subdir, name)
+    _createDirsAbove(fname)
     with open(fname, "w") as f:
         json.dump(value, f, indent=4, separators=(",", ": "))
 
@@ -103,7 +105,7 @@ def tryWriteFile(*args, **kwargs):
 
 def fileExists(subdir, name):
     fname = _getFilename(subdir, name)
-    return os.path.exists(fname)
+    return os.path.isfile(fname)
 
 
 
@@ -112,4 +114,21 @@ def fileExists(subdir, name):
 
 def _getFilename(subdir, name):
     return os.path.join(DATAFILE_DIR, subdir, name)
+
+def _createDirsAbove(fname):
+    """
+    Create all directories above a file. For example, if fname is
+    "a/b/c/d.txt", then this call is (intended to be) equivalent to
+    `mkdir -p a/b/c`.
+    """
+
+    dirToCreate = os.path.dirname(fname)
+    # https://stackoverflow.com/a/600612
+    try:
+        os.makedirs(dirToCreate)
+    except OSError as e:
+        if e.errno == errno.EEXIST and os.path.isdir(path):
+            pass
+        else:
+            raise
 

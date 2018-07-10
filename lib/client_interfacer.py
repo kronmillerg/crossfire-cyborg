@@ -945,6 +945,7 @@ class ClientInterfacer(object):
         isPlayer, rest = checkPrefix(msg, "player ")
         if isPlayer:
             tag, _, title = rest.partition(" ")
+            title = chompPrefix(title, "Player:").lstrip()
             self.playerInfo.setPlayerId(tag, title)
             return
 
@@ -1187,6 +1188,12 @@ class PlayerInfo:
         # Resistances ("request stat resists") ditto.
         # Spell path atunements etc. ("request stat paths") ditto.
 
+    @property
+    def name(self):
+        if self.title is None:
+            return None
+        return self.title.partition(" ")[0]
+
     def getAllRequestTypes(self):
         return [
             "player",
@@ -1370,6 +1377,12 @@ def checkPrefix(s, prefix):
 def chompSuffix(s, suffix="\n"):
     if s.endswith(suffix):
         return s[:-len(suffix)]
+    else:
+        return s
+
+def chompPrefix(s, prefix):
+    if s.startswith(prefix):
+        return s[len(prefix):]
     else:
         return s
 
