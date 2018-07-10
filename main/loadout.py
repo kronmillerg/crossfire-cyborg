@@ -129,24 +129,32 @@ FILE_SKELETON = {
 
 def main():
     cf = ClientInterfacer()
+    loadoutData = readFile("loadout", getLoadoutFilename(cf),
+                           default=FILE_SKELETON)
 
     args = sys.argv[1:]
 
-    if len(args) == 2 and args[0] == "save":
-        # TODO: stashable list
-        saveLoadout(cf, args[1], [])
+    if len(args) == 1 and args[0] == "list":
+        cf.fatal("Not implemented.") # TODO: List loadouts
+    elif len(args) == 2 and args[0] == "show":
+        cf.fatal("Not implemented.") # TODO: Show specified loadout
+    elif len(args) == 2 and args[0] == "save":
+        saveLoadout(cf, args[1], loadoutData)
+    elif len(args) == 2 and args[0] == "equip":
+        cf.fatal("Not implemented.") # TODO: Equip a loadout
+    elif len(args) == 1:
+        # Assume "equip".
+        cf.fatal("Not implemented.") # TODO: Equip a loadout
     else:
-        cf.fatal("Not implemented.")
+        cf.fatal("Not implemented.") # TODO: Usage message
 
-def saveLoadout(cf, name, stashable):
-    newLoadout = getLoadout(cf, stashable)
+def saveLoadout(cf, name, loadoutData):
+    newLoadout = getCurrentLoadout(cf, loadoutData["stashable"])
     cf.debugOut(repr(newLoadout))
-    filename = getLoadoutFilename(cf)
-    loadoutData = readFile("loadout", filename, default=FILE_SKELETON)
-    loadoutData["loadouts"]["name"] = newLoadout
-    writeFile("loadout", filename, loadoutData)
+    loadoutData["loadouts"][name] = newLoadout
+    writeFile("loadout", getLoadoutFilename(cf), loadoutData)
 
-def getLoadout(cf, stashable):
+def getCurrentLoadout(cf, stashable):
     inv = cf.getInventory()
 
     # Get lists of some types of items that we're interested in.
