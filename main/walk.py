@@ -11,7 +11,9 @@ import sys
 
 from lib.client_interfacer import ClientInterfacer
 
-cf = ClientInterfacer()
+# Use a deeper-than-usual pipeline for this one because we really want to walk
+# as fast as possible.
+cf = ClientInterfacer(targetPendingCommands=10)
 
 DIR = "data/travel"
 SERVER = "metalforge"
