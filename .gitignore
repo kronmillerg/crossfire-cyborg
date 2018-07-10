@@ -1,3 +1,7 @@
+# This directory tends to have player-specific config information, which isn't
+# part of the code and doesn't really belong in the git repo.
+data/
+
 # Compiled Python files.
 *.py[cod]
 
