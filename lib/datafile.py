@@ -127,7 +127,7 @@ def _createDirsAbove(fname):
     try:
         os.makedirs(dirToCreate)
     except OSError as e:
-        if e.errno == errno.EEXIST and os.path.isdir(path):
+        if e.errno == errno.EEXIST and os.path.isdir(dirToCreate):
             pass
         else:
             raise
