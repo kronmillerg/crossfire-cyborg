@@ -140,7 +140,7 @@ def main():
         cf.draw("- current          show current loadout")
         cf.draw("- list             list available loadouts")
         cf.draw("- show  <name>     show a loadout")
-        # cf.draw("- set-stashable    edit stashable items")
+        # cf.draw("- set-stashable    edit stashable items") # TODO
         cf.draw("- save  <name>     save current loadout")
         # cf.draw("- equip <name>     equip specified loadout") # TODO
     elif len(args) == 1 and args[0] == "list":
