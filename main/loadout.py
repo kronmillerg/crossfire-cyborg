@@ -134,10 +134,33 @@ def main():
 
     args = sys.argv[1:]
 
-    if len(args) == 1 and args[0] == "list":
-        cf.fatal("Not implemented.") # TODO: List loadouts
+    if args[0] == "help":
+        cf.draw("Usage: %s <cmd> <arguments>" % sys.argv[0])
+        cf.draw("Available commands:")
+        cf.draw("- current          show current loadout")
+        cf.draw("- list             list available loadouts")
+        cf.draw("- show  <name>     show a loadout")
+        # cf.draw("- set-stashable    edit stashable items")
+        cf.draw("- save  <name>     save current loadout")
+        # cf.draw("- equip <name>     equip specified loadout") # TODO
+    elif len(args) == 1 and args[0] == "list":
+        cf.draw("Available loadouts:")
+        for name in sorted(loadoutData["loadouts"].keys()):
+            cf.draw("- %s" % name)
+    elif len(args) == 1 and args[0] == "current":
+        currentLoadout = getCurrentLoadout(cf, loadoutData["stashable"])
+        cf.draw("Your current loadout is:")
+        showLoadout(cf, currentLoadout)
     elif len(args) == 2 and args[0] == "show":
-        cf.fatal("Not implemented.") # TODO: Show specified loadout
+        name = args[1]
+        if name in loadoutData["loadouts"]:
+            loadout = loadoutData["loadouts"][name]
+            cf.draw("Loadout %r consists of wearing:" % name)
+            showLoadout(cf, loadout)
+        else:
+            cf.drawError("No such loadout %r" % name)
+    elif len(args) == 1 and args[0] == "set-stashable":
+        cf.fatal("Not implemented.") # TODO: Interactively edit stashable list
     elif len(args) == 2 and args[0] == "save":
         saveLoadout(cf, args[1], loadoutData)
     elif len(args) == 2 and args[0] == "equip":
@@ -146,7 +169,19 @@ def main():
         # Assume "equip".
         cf.fatal("Not implemented.") # TODO: Equip a loadout
     else:
-        cf.fatal("Not implemented.") # TODO: Usage message
+        cf.fatal("Unable to parse command line. Try 'help'.")
+
+def showLoadout(cf, loadout):
+    for itemName in loadout["worn"]:
+        cf.draw("- %s" % itemName)
+    if loadout["stashed"]:
+        cf.draw("The following items are stashed:")
+        for itemName in loadout["stashed"]:
+            cf.draw("- %s" % itemName)
+    if loadout["unstashed"]:
+        cf.draw("The following items are NOT stashed:")
+        for itemName in loadout["unstashed"]:
+            cf.draw("- %s" % itemName)
 
 def saveLoadout(cf, name, loadoutData):
     newLoadout = getCurrentLoadout(cf, loadoutData["stashable"])

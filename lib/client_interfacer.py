@@ -1053,6 +1053,14 @@ class ClientInterfacer(object):
         # that, split it up and wrap onto new lines.
         self._sendToClient("draw %s %s" % (color, msg))
 
+    # TODO: Pick one set of names here and stick with it.
+
+    def drawWarning(self, msg):
+        self.draw("WARNING: " + str(msg), color=Color.ORANGE)
+
+    def drawError(self, msg):
+        self.draw("ERROR: " + str(msg), color=Color.RED)
+
     def logWarning(self, msg):
         self.draw("WARNING: " + str(msg), color=Color.ORANGE)
 
