@@ -84,26 +84,26 @@ class ClientInterfacer(object):
         self.playerInfo = PlayerInfo()
 
         # Mappings from request type ("inv", "on", etc.) to lists of Items.
-        #   - itemLists[type] contains the most recent fully-parsed list of
+        #   - _itemLists[type] contains the most recent fully-parsed list of
         #     items from a request of that type. If we have never fully
         #     resolved a request of a given type, then that key is not present
         #     in the mapping.
-        #   - itemListsInProgress[type] contains the list of items parsed so
+        #   - _itemListsInProgress[type] contains the list of items parsed so
         #     far from a currently-active request of that type. If a given type
         #     of items has never been requested, or if the most recent request
         #     has been fully resolved, then the key is not present.
         # Note that all 4 combinations of
-        #     ((key in itemLists), (key in itemListsInProgress))
+        #     ((key in _itemLists), (key in _itemListsInProgress))
         # are possible:
         #   - Not in either -- The item type has never been requested
-        #   - In itemListsInProgress only -- The item type has been requested
+        #   - In _itemListsInProgress only -- The item type has been requested
         #     once, but we're not finished handling the response.
-        #   - In itemLists only -- The item type has been requested once, and
+        #   - In _itemLists only -- The item type has been requested once, and
         #     we're finished resolving that request.
         #   - In both -- The item type has been requested more than once, and
         #     we're currently in the middle of resolving the latest request.
-        self.itemLists           = {}
-        self.itemListsInProgress = {}
+        self._itemLists           = {}
+        self._itemListsInProgress = {}
 
         # All of our queues are implemented using collections.deque. New
         # elements are enqueued (pushed) on the right (via append()), and the
@@ -112,15 +112,16 @@ class ClientInterfacer(object):
         # Command handling. When a command is issued, it goes through (up to) 3
         # states: queued, pending, done. Let's say that we've already sent a
         # few commands to the server, but they haven't been executed yet. Then
-        # (1) a new command will first be put into the commandQueue ("queued"),
-        # stored until later to avoid inundating the server and risking
-        # commands being dropped. At some point we'll hear back from the server
-        # that some of the previous commands were completed, at which point (2)
-        # we pop the new command off of the queue and actually send it to the
-        # server. After this, it takes some time for the command to reach the
-        # server and for the server to resolve it and tell the client, during
-        # which time the command is "pending". Once the client hears back from
-        # the server that the command has been resolved, it is "done".
+        # (1) a new command will first be put into the _commandQueue
+        # ("queued"), stored until later to avoid inundating the server and
+        # risking commands being dropped. At some point we'll hear back from
+        # the server that some of the previous commands were completed, at
+        # which point (2) we pop the new command off of the queue and actually
+        # send it to the server. After this, it takes some time for the command
+        # to reach the server and for the server to resolve it and tell the
+        # client, during which time the command is "pending". Once the client
+        # hears back from the server that the command has been resolved, it is
+        # "done".
         #
         # In practice, we don't keep track of _which_ commands are pending,
         # because there's no point. We just keep a count of how many commands
@@ -129,13 +130,13 @@ class ClientInterfacer(object):
         #
         # INVARIANT: On entry/exit from all public API calls, there are no
         # queuedCommands unless we're maxed out on pending commands. That is:
-        #     self._hasTargetPendingCommands() or len(self.commandQueue) == 0
-        self.commandQueue = collections.deque()
-        self.pendingCommands = collections.deque()
+        #     self._hasTargetPendingCommands() or len(self._commandQueue) == 0
+        self._commandQueue = collections.deque()
+        self._pendingCommands = collections.deque()
         self._targetPendingCommands = targetPendingCommands
 
         # Queues for particular types of inputs.
-        self.pendingScripttells = collections.deque()
+        self._pendingScripttells = collections.deque()
 
         # Catchall queue for inputs that aren't otherwise handled. Note that
         # use of this queue (and the functions that access it) is not
@@ -144,9 +145,9 @@ class ClientInterfacer(object):
         # TODO: Put a max length on this so it doesn't slowly fill up all
         # available memory in long-running scripts.
         #   - Actually, maybe do this for all the queues?
-        #   - Actually, can we just get rid of pendingMiscInputs? I don't know
+        #   - Actually, can we just get rid of _pendingMiscInputs? I don't know
         #     of any useful reason for it to be tracked...
-        self.pendingMiscInputs = collections.deque()
+        self._pendingMiscInputs = collections.deque()
 
         # Do this preemptively because the whole infrastructure we use to issue
         # commands depends on it.
@@ -192,7 +193,7 @@ class ClientInterfacer(object):
 
         if not isinstance(command, Command):
             command = Command(command, **kwargs)
-        self.commandQueue.append(command)
+        self._commandQueue.append(command)
         self._pumpQueue()
 
         self._checkInvariants()
@@ -244,14 +245,14 @@ class ClientInterfacer(object):
         allow arbitrarily many unhandled inputs of other types to build up
         while it's waiting for commands to resolve.
 
-        Postcondition: len(self.commandQueue) <= maxQueueSize
+        Postcondition: len(self._commandQueue) <= maxQueueSize
         """
 
         self._checkInvariants()
 
-        self._idleUntil(lambda: len(self.commandQueue) <= maxQueueSize)
+        self._idleUntil(lambda: len(self._commandQueue) <= maxQueueSize)
 
-        assert len(self.commandQueue) <= maxQueueSize
+        assert len(self._commandQueue) <= maxQueueSize
         self._checkInvariants()
 
     # TODO: Can we just register this to run at exit / on destruction?
@@ -263,17 +264,17 @@ class ClientInterfacer(object):
         own, you probably want to use idle() instead of this function.
 
         Postcondition:
-            len(self.commandQueue) == 0 and \\
+            len(self._commandQueue) == 0 and \\
                 self._boundPendingCommandsHigh() == 0
         """
 
         self._checkInvariants()
 
         self._ensureCanWaitOnPendingCommands()
-        self._idleUntil(lambda: len(self.commandQueue) == 0 and \
+        self._idleUntil(lambda: len(self._commandQueue) == 0 and \
             self._boundPendingCommandsHigh() == 0)
 
-        assert len(self.commandQueue) == 0 and \
+        assert len(self._commandQueue) == 0 and \
             self._boundPendingCommandsHigh() == 0
         self._checkInvariants()
 
@@ -288,7 +289,7 @@ class ClientInterfacer(object):
         # Note: I was tempted to call _ensureCanWaitOnPendingCommands here, but
         # I don't think it's necessary. The rule I've decided on is that any
         # function within the ClientInterfacer that waits on a condition that
-        # _might_ be affected by pendingCommands needs to call
+        # _might_ be affected by _pendingCommands needs to call
         # _ensureCanWaitOnPendingCommands. So if a function within the
         # ClientInterfacer waits based on this function, it's that function's
         # responsibility to call _ensureCanWaitOnPendingCommands, not this
@@ -307,7 +308,7 @@ class ClientInterfacer(object):
 
     def numQueuedCommands(self):
         self._checkInvariants()
-        return len(self.commandQueue)
+        return len(self._commandQueue)
 
     ### Other misc. related to issuing commands ###
 
@@ -339,7 +340,7 @@ class ClientInterfacer(object):
         """
 
         self._checkInvariants()
-        self.commandQueue.clear()
+        self._commandQueue.clear()
         self._checkInvariants()
 
     ########################################################################
@@ -368,11 +369,11 @@ class ClientInterfacer(object):
 
         This method is called internally by some other methods to restore the
         following invariant:
-            self._hasTargetPendingCommands() or len(self.commandQueue) == 0
+            self._hasTargetPendingCommands() or len(self._commandQueue) == 0
         """
 
         lowBound    = self._boundPendingCommandsLow()
-        anyGetsComc = any(cmd.getsComc for cmd in self.pendingCommands)
+        anyGetsComc = any(cmd.getsComc for cmd in self._pendingCommands)
         assert anyGetsComc == (lowBound != 0)
 
         # Largest number of consecutive commands we'll send that aren't going
@@ -381,8 +382,8 @@ class ClientInterfacer(object):
         maxConsecutiveNonComc = max(self._targetPendingCommands - 1, 1)
 
         sentAny = False
-        while self.commandQueue and lowBound < self._targetPendingCommands:
-            nextCommand = self.commandQueue.popleft()
+        while self._commandQueue and lowBound < self._targetPendingCommands:
+            nextCommand = self._commandQueue.popleft()
 
             # This next part is a workaround for an annoying quirk of CrossFire
             # that I discovered the hard way. The short version is that certain
@@ -420,7 +421,7 @@ class ClientInterfacer(object):
             #     commands which are sent to the server as "ncom" (new command)
             #     get "comc" acknowledgements.
             if not anyGetsComc and not nextCommand.getsComc and \
-                    len(self.pendingCommands) >= maxConsecutiveNonComc:
+                    len(self._pendingCommands) >= maxConsecutiveNonComc:
                 assert lowBound == 0
                 self._sendNoOp()
                 anyGetsComc = True
@@ -433,14 +434,14 @@ class ClientInterfacer(object):
             # don't _think_ that would cause us to hang. But it seems safer to
             # just go ahead and always send one real command in that case, so
             # that we can say that if we send a command at all, then we
-            # actually make progress on the commandQueue.
+            # actually make progress on the _commandQueue.
             self._sendCommand(nextCommand)
             sentAny = True
             if anyGetsComc:
                 lowBound += 1
 
         # Check our postcondition.
-        assert self._hasTargetPendingCommands() or len(self.commandQueue) == 0
+        assert self._hasTargetPendingCommands() or len(self._commandQueue) == 0
 
         if sentAny:
             # In this case, make sure that we only added the minimum that we
@@ -459,7 +460,7 @@ class ClientInterfacer(object):
         the server.
 
         Important: any function within the ClientInterfacer that waits on a
-        condition that _might_ be affected by pendingCommands needs to call
+        condition that _might_ be affected by _pendingCommands needs to call
         this function first. Otherwise, we could hang waiting for a "watch
         comc" that will never arrive!
         """
@@ -482,8 +483,8 @@ class ClientInterfacer(object):
             get a comc and therefore the script could hang.
         """
 
-        return len(self.pendingCommands) == 0 or \
-            any(cmd.getsComc for cmd in self.pendingCommands)
+        return len(self._pendingCommands) == 0 or \
+            any(cmd.getsComc for cmd in self._pendingCommands)
 
     def _sendNoOp(self):
         """
@@ -499,11 +500,11 @@ class ClientInterfacer(object):
 
     def _sendCommand(self, command):
         self._sendToClient(command.encode())
-        self.pendingCommands.append(command)
+        self._pendingCommands.append(command)
 
     def _checkInvariants(self):
         # TODO: Call this more consistently.
-        assert self._hasTargetPendingCommands() or len(self.commandQueue) == 0
+        assert self._hasTargetPendingCommands() or len(self._commandQueue) == 0
 
     def _hasTargetPendingCommands(self):
         """
@@ -526,20 +527,20 @@ class ClientInterfacer(object):
         # "uncertain", in the sense that we wouldn't get an acknowledgement for
         # them anyway so we don't know if they've resolved.
         numUncertain = 0
-        for x in self.pendingCommands:
+        for x in self._pendingCommands:
             if x.getsComc:
                 break
             else:
                 numUncertain += 1
 
-        return len(self.pendingCommands) - numUncertain
+        return len(self._pendingCommands) - numUncertain
 
     def _boundPendingCommandsHigh(self):
         """
         Return an upper bound on the number of pending commands.
         """
 
-        return len(self.pendingCommands)
+        return len(self._pendingCommands)
 
     def _boundPendingCommandsBoth(self):
         """
@@ -717,7 +718,7 @@ class ClientInterfacer(object):
         item list.
         """
 
-        if requestType not in self.itemListsInProgress:
+        if requestType not in self._itemListsInProgress:
             self.requestItemsOfType(requestType)
         self._idleUntil(lambda: self.hasItemsOfType(requestType))
         return self.itemsOfType(requestType)
@@ -730,11 +731,11 @@ class ClientInterfacer(object):
         list once the request has resolved.
         """
 
-        if requestType in self.itemListsInProgress:
+        if requestType in self._itemListsInProgress:
             self.logError("Already in the middle of requesting items %s, " \
                 "better not request them again." % requestType)
             return
-        self.itemListsInProgress[requestType] = []
+        self._itemListsInProgress[requestType] = []
         self._sendToClient("request items %s" % requestType)
 
     def itemsOfType(self, requestType):
@@ -744,13 +745,13 @@ class ClientInterfacer(object):
         """
 
         # Note: this is very slightly different from
-        # self.itemLists.get(requestType, None) because we copy the list if
+        # self._itemLists.get(requestType, None) because we copy the list if
         # it's present, but we can't do None[:].
         if self.hasItemsOfType(requestType):
             # Make a copy of the item list because this is a real member
             # function, not a @property, so it would be confusing if the user
             # modified the returned list and it messed with our internal state.
-            return self.itemLists[requestType][:]
+            return self._itemLists[requestType][:]
         else:
             return None
 
@@ -761,7 +762,7 @@ class ClientInterfacer(object):
         type.
         """
 
-        return requestType in self.itemLists
+        return requestType in self._itemLists
 
     def hasUpdItemsOfType(self, requestType):
         """
@@ -769,20 +770,20 @@ class ClientInterfacer(object):
         resolved. If we have never requested items of that type, return False.
         """
 
-        return requestType in self.itemLists and \
-            requestType not in self.itemListsInProgress
+        return requestType in self._itemLists and \
+            requestType not in self._itemListsInProgress
 
 
     # scripttells
 
     def hasScripttell(self):
-        return self._hasInputInQueue(self.pendingScripttells)
+        return self._hasInputInQueue(self._pendingScripttells)
 
     def getNextScripttell(self):
-        return self._getNextInputFromQueue(self.pendingScripttells)
+        return self._getNextInputFromQueue(self._pendingScripttells)
 
     def waitForScripttell(self):
-        self._waitForInputInQueue(self.pendingScripttells)
+        self._waitForInputInQueue(self._pendingScripttells)
 
 
     # Misc other inputs that don't have their own handling.
@@ -793,13 +794,13 @@ class ClientInterfacer(object):
     # tomorrow.
 
     def hasMiscInput(self):
-        return self._hasInputInQueue(self.pendingMiscInputs)
+        return self._hasInputInQueue(self._pendingMiscInputs)
 
     def getNextMiscInput(self):
-        return self._getNextInputFromQueue(self.pendingMiscInputs)
+        return self._getNextInputFromQueue(self._pendingMiscInputs)
 
     def waitForMiscInput(self):
-        self._waitForInputInQueue(self.pendingMiscInputs)
+        self._waitForInputInQueue(self._pendingMiscInputs)
 
     ########################################################################
     # Internal helpers -- handling client input
@@ -834,14 +835,14 @@ class ClientInterfacer(object):
         # simple scripts. Also, this way we don't have to hide the code for it
         # in with the other "watch" handling, which is substantially different.
         if msg.startswith("watch comc"):
-            if self.pendingCommands:
+            if self._pendingCommands:
                 # See large comment in _pumpQueue for why this is necessary.
-                while self.pendingCommands:
-                    cmd = self.pendingCommands.popleft()
+                while self._pendingCommands:
+                    cmd = self._pendingCommands.popleft()
                     if cmd.getsComc:
                         break
                 self._pumpQueue()
-            # if self.pendingCommands is empty, then just swallow the message.
+            # if self._pendingCommands is empty, then just swallow the message.
             # This can happen if the player executes some commands while we're
             # listening (perhaps while the script is idle). There's no other
             # use for "watch comc" messages, so still don't store them.
@@ -860,12 +861,12 @@ class ClientInterfacer(object):
         # Scripttells
         isScripttell, rest = checkPrefix(msg, "scripttell ")
         if isScripttell:
-            self.pendingScripttells.append(rest)
+            self._pendingScripttells.append(rest)
             return
 
         # If none of the code above handled it, throw it in the "misc inputs"
         # queue.
-        self.pendingMiscInputs.append(msg)
+        self._pendingMiscInputs.append(msg)
 
     def _handleWatch(self, msg):
         """
@@ -999,7 +1000,7 @@ class ClientInterfacer(object):
         """
 
         requestType, _, rest = msg.partition(" ")
-        if requestType not in self.itemListsInProgress:
+        if requestType not in self._itemListsInProgress:
             # If we're not expecting an item update of the given type, drop the
             # message. Conceivably we could try to lazily start a list, but I
             # worry it would come out incomplete or with some duplicate items.
@@ -1008,8 +1009,9 @@ class ClientInterfacer(object):
             return
 
         if rest == "end":
-            self.itemLists[requestType] = self.itemListsInProgress[requestType]
-            del self.itemListsInProgress[requestType]
+            self._itemLists[requestType] = \
+                self._itemListsInProgress[requestType]
+            del self._itemListsInProgress[requestType]
             return
 
         # Split into <tag> <num> <weight> <flags> <type> <name>
@@ -1022,7 +1024,7 @@ class ClientInterfacer(object):
         tag, num, weight, flags, clientType, name = parts
         item = Item(int(tag), int(num), int(weight), int(flags),
                     int(clientType), name)
-        self.itemListsInProgress[requestType].append(item)
+        self._itemListsInProgress[requestType].append(item)
 
     ########################################################################
     # Drawing information to the screen
