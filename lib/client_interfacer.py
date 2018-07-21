@@ -41,6 +41,26 @@ class Color:
 
 
 class ClientInterfacer(object):
+    """
+    Class responsible for maintaining some basic state and handling all direct
+    communications with the client.
+
+    Introduction to some terminology used when handling commands:
+
+        When a command is issued, it goes through (up to) 3 states: queued,
+        pending, done. Let's say that we've already sent a few commands to the
+        server, but they haven't been executed yet. Then (1) a new command will
+        first be put into a queue of commands to be sent ("queued"), stored
+        until later to avoid inundating the server and risking commands being
+        dropped. At some point we'll hear back from the server that some of the
+        previous commands were completed, at which point (2) we pop the new
+        command off of the queue and actually send it to the server. After
+        this, it takes some time for the command to reach the server and for
+        the server to resolve it and tell the client, during which time the
+        command is "pending". Once the client hears back from the server that
+        the command has been resolved, it is "done".
+    """
+
     _numCreated = 0
 
     def __init__(self, targetPendingCommands=6):
@@ -109,27 +129,13 @@ class ClientInterfacer(object):
         # elements are enqueued (pushed) on the right (via append()), and the
         # oldest element is dequeued (popped) from the left (popleft()).
 
-        # Command handling. When a command is issued, it goes through (up to) 3
-        # states: queued, pending, done. Let's say that we've already sent a
-        # few commands to the server, but they haven't been executed yet. Then
-        # (1) a new command will first be put into the _commandQueue
-        # ("queued"), stored until later to avoid inundating the server and
-        # risking commands being dropped. At some point we'll hear back from
-        # the server that some of the previous commands were completed, at
-        # which point (2) we pop the new command off of the queue and actually
-        # send it to the server. After this, it takes some time for the command
-        # to reach the server and for the server to resolve it and tell the
-        # client, during which time the command is "pending". Once the client
-        # hears back from the server that the command has been resolved, it is
-        # "done".
-        #
-        # In practice, we don't keep track of _which_ commands are pending,
-        # because there's no point. We just keep a count of how many commands
-        # are pending so that we can do things like "send more commands up to
-        # targetPendingCommands" or "wait until all pending commands are done".
+        # Command handling. See this class's doc string for an introduction to
+        # the terminology used here. _commandQueue stores the queued commands,
+        # _pendingCommands stores the pending commands. "Done" commands aren't
+        # stored anywhere, because there's no need to keep track of them.
         #
         # INVARIANT: On entry/exit from all public API calls, there are no
-        # queuedCommands unless we're maxed out on pending commands. That is:
+        # queued commands unless we're maxed out on pending commands. That is:
         #     self._hasTargetPendingCommands() or len(self._commandQueue) == 0
         self._commandQueue = collections.deque()
         self._pendingCommands = collections.deque()
@@ -163,7 +169,7 @@ class ClientInterfacer(object):
     ########################################################################
     # Issuing commands to the player
 
-    ### Execute a command ###
+    ### Sending a command ###
 
     # The following three methods start a new command through the command
     # pipeline and wait (respectively) until it is at least (1) queued, (2)
@@ -232,7 +238,7 @@ class ClientInterfacer(object):
 
         self._checkInvariants()
 
-    ### Flush queued/pending commands ###
+    ### Flushing queued/pending commands ###
 
     def issueQueuedCommands(self, maxQueueSize=0):
         """
@@ -255,7 +261,7 @@ class ClientInterfacer(object):
         assert len(self._commandQueue) <= maxQueueSize
         self._checkInvariants()
 
-    # TODO: Can we just register this to run at exit / on destruction?
+    # TODO: Register this to run at exit / on destruction.
     def flushCommands(self):
         """
         Block until all queued commands have been fully executed.
@@ -278,7 +284,7 @@ class ClientInterfacer(object):
             self._boundPendingCommandsHigh() == 0
         self._checkInvariants()
 
-    ### Check how many commands are in the pipeline ###
+    ### Checking how many commands are in the pipeline ###
 
     def hasAnyPendingCommands(self):
         """
@@ -296,7 +302,7 @@ class ClientInterfacer(object):
         # function's.
         return self._boundPendingCommandsHigh() > 0
 
-    def atTargetPendingCommands(self):
+    def hasTargetPendingCommands(self):
         """
         Return True if the number of pending commands is definitely as large as
         the target value, meaning that given the opportunity we would not
@@ -304,9 +310,14 @@ class ClientInterfacer(object):
         """
 
         self._checkInvariants()
-        return self._atTargetPendingCommands()
+        return self._hasTargetPendingCommands()
 
     def numQueuedCommands(self):
+        """
+        Return the number of commands that are queued. Note that this does not
+        include pending commands.
+        """
+
         self._checkInvariants()
         return len(self._commandQueue)
 
@@ -319,7 +330,8 @@ class ClientInterfacer(object):
         Change the number of commands that may be pending on the server before
         we start putting commands in the queue. Increasing this value will
         cause the oldest few commands from the queue to be sent to the server
-        immediately.
+        immediately. Decreasing this value will _not_ cause the script to block
+        waiting for the number of pending commands to shrink.
         """
 
         self._checkInvariants()
@@ -414,7 +426,9 @@ class ClientInterfacer(object):
             #
             # (The motivation for this rule is that it means I don't allow us
             # to get into a situation where 0 pending commands and
-            # _targetPendingCommands are indistinguishable.)
+            # _targetPendingCommands are indistinguishable. I don't have a
+            # particularly substantial reason for that choice, it just sounds
+            # nice.)
             #
             # [*] For those somewhat knowledgeable about the CrossFire source
             #     itself, I believe the important distinction here is that only
@@ -428,13 +442,9 @@ class ClientInterfacer(object):
                 lowBound    = 1
 
             # If _targetPendingCommands is 1 and we just sent a noop, then we
-            # may already be at _targetPendingCommands. In that case maybe we
-            # could skip this part and not actually send that command -- since
-            # I special-cased the _targetPendingCommands == 1 case above, I
-            # don't _think_ that would cause us to hang. But it seems safer to
-            # just go ahead and always send one real command in that case, so
-            # that we can say that if we send a command at all, then we
-            # actually make progress on the _commandQueue.
+            # may already be at _targetPendingCommands. Still send the next
+            # command in that case, though, to ensure that we make some
+            # progress on the command queue.
             self._sendCommand(nextCommand)
             sentAny = True
             if anyGetsComc:
@@ -457,7 +467,8 @@ class ClientInterfacer(object):
         """
         Ensure that it is safe to wait until a pending command resolves. If it
         is not already safe, this is accomplished by sending a no-op command to
-        the server.
+        the server. See _canWaitOnPendingCommands for the reason why it might
+        not be safe.
 
         Important: any function within the ClientInterfacer that waits on a
         condition that _might_ be affected by _pendingCommands needs to call
@@ -499,6 +510,12 @@ class ClientInterfacer(object):
         self._sendCommand(Command("stay"))
 
     def _sendCommand(self, command):
+        """
+        Send the specified command to the server. (Technically we send it to
+        the client, and the client re-encodes it and sends it to the server on
+        our behalf.)
+        """
+
         self._sendToClient(command.encode())
         self._pendingCommands.append(command)
 
@@ -520,7 +537,8 @@ class ClientInterfacer(object):
         Really this just means the smallest possible number of commands that
         could still be pending as of the last time we
         _handlePendingClientInputs()ed. It's always possible that more commands
-        have resolved but we haven't yet seen the "watch comc".
+        have resolved but we haven't yet seen the "watch comc" for them; we
+        don't make any attempt to resolve that race condition.
         """
 
         # Count how many pending commands at the front of the queue are
@@ -555,24 +573,64 @@ class ClientInterfacer(object):
     # Generating specific types of commands.
 
     # Note that you have to actually pass the returned Commands to queueCommand
-    # or whatever if you want to issue them.
+    # or one of the similar functions if you want to issue them.
 
     def getMarkCommand(self, item):
+        """
+        Generate a command to mark an item.
+        """
+
         return Command("mark %d" % item.tag, isSpecial=True)
 
     def getApplyCommand(self, item):
+        """
+        Generate a command to apply an item.
+        """
+
         return Command("apply %d" % item.tag, isSpecial=True)
 
-    def getPickupCommand(self, item, count=0):
-        return self._getMoveCommand(item, self.playerInfo.tag, count)
-
     def getDropCommand(self, item, count=0):
+        """
+        Generate a command to drop an item.
+
+        IMPORTANT: The generated command will use the special "move" command,
+        which ignores the "locked" status of the item! In an attempt to prevent
+        accidentally dropping locked items, this function checks if the
+        specified item is marked as "locked", and gives a fatal error if so.
+        However, this is based on the Item object in the script, and therefore
+        subject to a race condition if the player (or another script) locks the
+        item after our last "request items inv" and before this command is
+        resolved. So don't call this function on an item unless you have reason
+        to believe that it won't be locked.
+        """
+
         return self._getMoveCommand(item, 0, count)
 
+    def getPickupCommand(self, item, count=0):
+        """
+        Generate a command to pick up an item from the ground.
+
+        See getDropCommand for warning about locked items.
+        """
+
+        return self._getMoveCommand(item, self.playerInfo.tag, count)
+
     def getMoveCommand(self, item, dest, count=0):
+        """
+        Generate a command to move an item into a container.
+
+        See getDropCommand for warning about locked items.
+        """
+
         return self._getMoveCommand(item, dest.tag, count)
 
+    ### Internal helper ###
+
     def _getMoveCommand(self, item, destTag, count):
+        """
+        Common helper for all "move"-based getXCommand functions.
+        """
+
         if item.locked:
             self.fatal("Attempt to move locked item %s <tag=%s>." %
                 (item.name, item.tag))
@@ -619,16 +677,14 @@ class ClientInterfacer(object):
 
     def pumpEvents(self):
         """
-        Do internal handling for any inputs received from the client. Do not
-        block.
+        Do internal handling for any inputs already received from the client.
+        Do not block.
 
         Some examples of handling done by this function:
           - If we're below targetPendingCommands, then commands are
             automatically issued from the command queue to get up to
             targetPendingCommands (or until the queue is empty).
           - Update playerInfo based on any incoming messages with stat info.
-          - Misc internal bookkeeping that would otherwise be handled lazily.
-            You don't need to call this function for this purpose.
         """
 
         # CLEANUP: Maybe just inline _handlePendingClientInputs here and then
@@ -661,6 +717,8 @@ class ClientInterfacer(object):
         self._sendToClient("watch stats")
 
         if waitForInitialValues:
+            # TODO: Should we clear the playerInfo in this case? If the user
+            # previously called unwatchStats(), then this isn't going to work.
             self._idleUntil(self.playerInfo.haveAllStats)
 
     def unwatchStats(self):
@@ -674,9 +732,17 @@ class ClientInterfacer(object):
     # Querying inventory.
 
     def getInventory(self):
+        """
+        Equivalent to self.getItemsOfType("inv")
+        """
+
         return self.getItemsOfType("inv")
 
     def requestInventory(self):
+        """
+        Equivalent to self.requestItemsOfType("inv")
+        """
+
         self.requestItemsOfType("inv")
 
     @property
@@ -700,12 +766,20 @@ class ClientInterfacer(object):
         # (Now, if only I knew of a way to create a copy-on-write duplicate of
         # the original list and return that instead... or, y'know, if only the
         # language provided a way to mark the return value as "const".)
-        return self.itemsOfType.get("inv", None)
+        return self._itemLists.get("inv", None)
 
     def hasInventory(self):
+        """
+        Equivalent to self.hasItemsOfType("inv")
+        """
+
         return self.hasItemsOfType("inv")
 
     def hasUpdInventory(self):
+        """
+        Equivalent to self.hasUpdItemsOfType("inv")
+        """
+
         return self.hasUpdItemsOfType("inv")
 
 
@@ -726,9 +800,9 @@ class ClientInterfacer(object):
     def requestItemsOfType(self, requestType):
         """
         Ask the client for a list of items of the given type, but return
-        immediately. Use self.hasUpdItemsOfType(requestType) to check if the
-        request has resolved yet, and self.itemsOfType(requestType) to get the
-        list once the request has resolved.
+        immediately. You can use self.hasUpdItemsOfType(requestType) to check
+        if the request has resolved yet, and self.itemsOfType(requestType) to
+        get the list once the request has resolved.
         """
 
         if requestType in self._itemListsInProgress:
@@ -791,7 +865,9 @@ class ClientInterfacer(object):
     # that are currently categorized as "misc inputs" may in the future be
     # given their own queues. I'm providing these functions for completeness,
     # but you probably shouldn't use them if you want your script to still work
-    # tomorrow.
+    # in the future.
+    # TODO: Provide API calls for things like "watch X", "request X",
+    # "monitor", so that these aren't necessary anymore.
 
     def hasMiscInput(self):
         return self._hasInputInQueue(self._pendingMiscInputs)
@@ -806,6 +882,12 @@ class ClientInterfacer(object):
     # Internal helpers -- handling client input
 
     def _hasInputInQueue(self, queue):
+        """
+        Check if there are any pending inputs that either (1) are already on
+        the specified queue, or (2) would go on that queue if we handled any
+        arrived-but-unprocessed inputs from the client.
+        """
+
         # If there's something already buffered, then that's an unhandled
         # input. In this case don't check stdin, because that's needlessly
         # slow.
@@ -817,20 +899,39 @@ class ClientInterfacer(object):
         return len(queue) > 0
 
     def _getNextInputFromQueue(self, queue):
+        """
+        Get the next input that would go on the given queue, blocking if
+        necessary.
+        """
+
         self._waitForInputInQueue(queue)
         assert len(queue) > 0
         return queue.popleft()
 
     def _waitForInputInQueue(self, queue):
+        """
+        Block until there is input on the given queue.
+        """
+
         # Note: queue must be a reference to a queue that actually gets updated
         # when we _handleClientInput; otherwise this will hang.
         self._idleUntil(lambda: len(queue) > 0)
 
     def _handlePendingClientInputs(self):
+        """
+        Handle any inputs that have already arrived from the client. Do not
+        block.
+        """
+
         while self._checkForClientInput():
             self._handleClientInput(self._readLineFromClient())
 
     def _handleClientInput(self, msg):
+        """
+        Handle the given input from the client. Do any necessary internal
+        bookkeeping, put it on one or more queues if appropriate, etc.
+        """
+
         # Do "watch comc" first, because it's the most common case in most
         # simple scripts. Also, this way we don't have to hide the code for it
         # in with the other "watch" handling, which is substantially different.
@@ -848,7 +949,8 @@ class ClientInterfacer(object):
             # use for "watch comc" messages, so still don't store them.
             return
 
-        # Do watch and request next
+        # Do watch and request next, because they can be fairly high-volume
+        # when they do show up.
         isWatch, rest = checkPrefix(msg, "watch ")
         if isWatch:
             self._handleWatch(rest)
@@ -858,7 +960,8 @@ class ClientInterfacer(object):
             self._handleRequest(rest)
             return
 
-        # Scripttells
+        # Scripttells shouldn't come in at a high rate, so leave them until
+        # last.
         isScripttell, rest = checkPrefix(msg, "scripttell ")
         if isScripttell:
             self._pendingScripttells.append(rest)
@@ -870,6 +973,8 @@ class ClientInterfacer(object):
 
     def _handleWatch(self, msg):
         """
+        Handle a "watch" input (except "watch comc").
+
         msg has the initial "watch " stripped off, but is otherwise passed
         through from the client.
         """
@@ -1055,7 +1160,10 @@ class ClientInterfacer(object):
         # that, split it up and wrap onto new lines.
         self._sendToClient("draw %s %s" % (color, msg))
 
-    # TODO: Pick one set of names here and stick with it.
+    # TODO: Of the next 6 functions, I'm not sure I like the names/behavior of
+    # any except fatal. Don't count on the other 5 sticking around unchanged in
+    # the public API.
+    # TODO: At least pick one set of names here and stick with it.
 
     def drawWarning(self, msg):
         self.draw("WARNING: " + str(msg), color=Color.ORANGE)
@@ -1079,7 +1187,8 @@ class ClientInterfacer(object):
 
     # Provide a public API function for outputting to the console so that other
     # modules can do this. Note that this method outputs the string passed in
-    # regardless of whether DEBUG is set.
+    # regardless of whether DEBUG is set. (TODO: rename this and make _debug
+    # public?)
     def debugOut(self, msg):
         self._sendToConsole(msg)
 
