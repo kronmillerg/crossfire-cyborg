@@ -1,4 +1,10 @@
 """
+Copyright (c) 2018 Greg Kronmiller
+
+Script to save/restore loadouts in CrossFire.
+"""
+
+"""
 Plan:
 
     python loadout.py save <name> --

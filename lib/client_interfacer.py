@@ -1,3 +1,9 @@
+"""
+Copyright (c) 2018 Greg Kronmiller
+
+Module for basic interfacing between CrossFire scripts and the client.
+"""
+
 import collections
 import os
 import platform

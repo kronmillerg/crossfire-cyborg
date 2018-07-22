@@ -1,4 +1,6 @@
 """
+Copyright (c) 2018 Greg Kronmiller
+
 A collection of commonly-used / simple script recipes. No relation to in-game
 crafting recipes.
 

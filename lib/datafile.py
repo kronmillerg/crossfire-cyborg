@@ -1,4 +1,6 @@
 """
+Copyright (c) 2018 Greg Kronmiller
+
 Utility functions for reading and writing data files.
 
 For simplicity, each file stores a single JSON object. Admittedly this isn't

@@ -1,4 +1,6 @@
 """
+Copyright (c) 2018 Greg Kronmiller
+
 Partial port of old/travel.py to the new ClientInterfacer API. Only supports
 walking between already-defined waypoints.
 

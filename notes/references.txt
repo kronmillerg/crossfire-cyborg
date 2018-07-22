@@ -5,7 +5,8 @@ CrossFire source:
 Scripting reference:
     http://wiki.metalforge.net/doku.php/client_side_scripting:client_scripting_interface-basic_howto
 
-Local paths to some interesting game files:
+Local paths to some interesting game files (on Linux Mint 18.1 Serena; probably
+the paths are the same on most/all Ubuntu- and Debian-based systems):
     /usr/share/games/crossfire/           -- top level dir
     /usr/share/games/crossfire/maps/      -- maps
     /usr/share/games/crossfire/archetypes -- item archetypes
