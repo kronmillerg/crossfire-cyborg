@@ -192,6 +192,7 @@ Basic plan:
   - Suite is ready! Can now use it for pathfinding.
 """
 
+import collections
 import re
 
 # Regular expressions for the various symbols you can use in the "picture" part
@@ -199,23 +200,34 @@ import re
 # else the alignment of the picture will get messed up. Basically each one
 # needs to either be a single (possibly-escaped) character, or else a character
 # class. Also, it is assumed that no two of them will ever match the _same_
-# character.
-RE_ANNOT_START  = re.compile("\[")       # Start of annotation
-RE_ANNOT_END    = re.compile("\]")       # End of annotation
+# character, except that RE_PORTAL_NAME_DELIM may be the same as one of the
+# ones used in the picture. (Technically RE_ANNOT_END can as well, but that's
+# discouraged as it seems somewhat more confusing.)
+RE_ANNOT_START       = re.compile("\[")       # Start of annotation
+RE_ANNOT_END         = re.compile("\]")       # End of annotation
     # The RE_ANNOT_START and RE_ANNOT_END characters nest like parentheses. So
     # for example, "[foo [bar]] [baz]" has 2 annotations, not 3.
-RE_WALL         = re.compile("[-+|#]")   # Impassable square
-RE_FLOOR        = re.compile("[. ]")     # Passable square
-RE_POINT_OF_INT = re.compile("[a-zA-Z]")
+RE_PORTAL_NAME_DELIM = re.compile(">")
+    # Separates portal name from destination (in annotation).
+RE_WALL              = re.compile("[-+|#]")   # Impassable square
+RE_FLOOR             = re.compile("[. ]")     # Passable square
+RE_POINT_OF_INT      = re.compile("[a-zA-Z]")
     # Point of interest. Must have a corresponding annotation giving its name.
-RE_UNKNOWN      = re.compile("\?")
+RE_UNKNOWN           = re.compile("\?")
     # Don't have a good way to represent this square; avoid stepping on it.
     # (This is treated the same as a wall by pathfinding, but conceptually it's
     # different.)
-RE_PORTAL_APPLY = re.compile("[><]")     # Portal, apply to use
-RE_PORTAL_STEP  = re.compile("\^")       # Portal, activated by stepping on it
-RE_CUSTOM_ENDPT = re.compile("!")
+RE_PORTAL_APPLY      = re.compile("[><]")     # Portal, apply to use
+RE_PORTAL_STEP       = re.compile("\^")       # Portal, step on to use
+RE_CUSTOM_ENDPT      = re.compile("!")
     # Endpoint of a custom-defined path. (Not implemented yet.)
+
+# TODO: Can we create a reportError function to replace all these logErrors,
+# which does nice things like pointing you to the line and character where the
+# error appeared? Might be overkill, though, especially since the map
+# descriptions are likely to be hardcoded in scripts in practice. (If the map
+# is read from a file, it's kind of hard to know what the names of the
+# waypoints are.)
 
 # Take in a ClientInterfacer so we can report errors.
 # TODO: Passing a ClientInterfacer around just for error reporting seems like
@@ -256,7 +268,7 @@ def parseMap(desc, cf):
             roomLines.append(line)
     makeRoomForPrevLines()
 
-    # TODO: Link rooms.
+    # FIXME 2: Create suite, link rooms.
     NotImplemented
 
 def parseRoom(name, lines, cf):
@@ -282,7 +294,59 @@ def parseRoom(name, lines, cf):
     assert len(pictureRows) == len(annotations) == len(lines) > 0
     height = len(pictureRows)
 
-    # TODO BOOKMARK: Split out the annotations for each row into a list.
+    # Convert each element of annotations from a string (all the annotations,
+    # unparsed) to a list of individual annotations.
+    for i in range(len(annotations)):
+        annotStr = annotations[i]
+        # If we found an RE_ANNOT_START on this line, then it is the first
+        # character of annotStr. Else, annotStr is "".
+        if len(annotStr) == 0:
+            annotations[i] = []
+            continue
+        assert RE_ANNOT_START.match(annotStr[0])
+        annotList = []
+        currAnnot = ""
+        nestingDepth = 0
+        for c in annotStr:
+            # Probably some of this logic could be combined, but I'm not yet
+            # convinced it would be easier to read that way.
+            if RE_ANNOT_START.match(c):
+                if nestingDepth > 0:
+                    # Already inside an annotation.
+                    currAnnot += c
+                else:
+                    # Starting a new annotation. currAnnot will already be ""
+                    # because we cleared it at the last END_ANNOT.
+                    assert currAnnot == ""
+                nestingDepth += 1
+            elif RE_ANNOT_END.match(c):
+                if nestingDepth <= 0:
+                    cf.logError("Error parsing %s: unbalanced " \
+                        "end-annotation marker." % name)
+                    return None
+                nestingDepth -= 1
+                if nestingDepth == 0:
+                    # We just closed the outermost pair of brackets, and
+                    # therefore finished the current annotation.
+                    annotList.append(currAnnot)
+                    currAnnot = ""
+                else:
+                    currAnnot += c
+            elif nestingDepth == 0:
+                if not c.isspace():
+                    cf.logError("Error parsing %s: non-whitespace " \
+                        "character outside of (but among) annotations." % \
+                        name)
+                    return None
+                # Don't add it to currAnnot because we're not in an annotation.
+            else:
+                # Just a regular character inside an annotation.
+                currAnnot += c
+        if nestingDepth > 0:
+            cf.logError("Error parsing %s: unbalanced start-annotation " \
+                "marker." % name)
+            return None
+        annotations[i] = annotList
 
     # Strip whitespace from the _right_ side of each row of the picture without
     # regard for alignment. Jagged trailing whitespace won't affect the
@@ -375,6 +439,8 @@ def parseRoom(name, lines, cf):
     # "You're tearing me apart, Lisa!"
     theRoom = Room(name, width, height)
     for y in range(height):
+        # Each time we need an annotation, we pop from the start of this.
+        rowAnnots = collections.deque(annotations[y])
         for x in range(width):
             c = pictureRows[y][x]
             if RE_WALL.match(c):
@@ -383,28 +449,64 @@ def parseRoom(name, lines, cf):
                 theRoom[x, y] = Room.FLOOR
             elif RE_POINT_OF_INT.match(c):
                 theRoom[x, y] = Room.FLOOR
-                # TODO BOOKMARK: Need to check the annotations.
-                # theRoom.addPointOfInterest(...)
-                NotImplemented
+                # TODO: There are 3 copies of this check... can we factor it
+                # out somehow?
+                if not rowAnnots:
+                    cf.logError("Error parsing %s: not enough annotations." % \
+                        name)
+                    return None
+                poiName = rowAnnots.popleft()
+                theRoom.addPointOfInterest(poiName, x, y)
             elif RE_UNKNOWN.match(c):
                 theRoom[x, y] = Room.UNKNOWN
             elif RE_PORTAL_APPLY.match(c):
                 theRoom[x, y] = Room.PORTAL_APPLY
-                # TODO BOOKMARK: Need to check the annotations.
-                # theRoom.setPortalDest(...)
-                NotImplemented
+                if not rowAnnots:
+                    cf.logError("Error parsing %s: not enough annotations." % \
+                        name)
+                    return None
+                if not addPortalToRoom(theRoom, rowAnnots.popleft(), x, y)
+                    return None
             elif RE_PORTAL_STEP.match(c):
                 theRoom[x, y] = Room.PORTAL_STEP
-                # TODO BOOKMARK: Need to check the annotations.
-                # theRoom.setPortalDest(...)
-                NotImplemented
+                if not rowAnnots:
+                    cf.logError("Error parsing %s: not enough annotations." % \
+                        name)
+                    return None
+                if not addPortalToRoom(theRoom, rowAnnots.popleft(), x, y):
+                    return None
             elif RE_CUSTOM_ENDPT.match(c):
+                # TODO
                 cf.logError("Custom paths not implemented yet.")
                 return None
+            else:
+                cf.logError("Error parsing %s: unrecognized character in " \
+                    "map: %r." % (name, c))
+                return None
+        if rowAnnots:
+            cf.logError("Error parsing %s: too many annotations." % name)
+            return None
 
-    # TODO: Is there anything else left here?
-    NotImplemented
     return theRoom
 
-# TODO: Implement Room class.
+def addPortalToRoom(theRoom, annot, x, y):
+    "Return True on success, False on failure."
+    parts = RE_PORTAL_NAME_DELIM.split(annot)
+    assert len(parts) > 0
+    name = None
+    dest = None
+    if len(parts) == 1:
+        # Only a dest
+        dest = parts[0]
+    elif len(parts) == 2:
+        theRoom.addPointOfInterest(parts[0], x, y)
+        dest = parts[1]
+    else:
+        cf.logError("Error parsing %s: portal annotation contains multiple " \
+            "name-dest delimiters." % theRoom.name)
+        return False
+    assert dest is not None
+    theRoom.setPortalDestName(x, y, dest)
+
+# FIXME 1: Implement Room class.
 
