@@ -139,7 +139,7 @@ alignment in the process.
          # ### #
 
     and leave us wondering _which_ squares are supposed to be bounded. (Answer:
-    all of them, but a rectangular border is easier to check anyway.
+    all of them, but a rectangular border is easier to check anyway.)
 
 Oh, also, any sort of whitespace _other_ than space that appears inside or left
 of the picture is a fatal error. I am NOT dealing with figuring out how the
@@ -162,9 +162,10 @@ start of the line.)
 
 Points of Interest are normally assumed passable; should we have a way to
 override that?
-  - Wrong question. Should we reserve characters that are logically for PoI to
-    mean "also a PoI, but not passable"? For example, reserve capital letters
-    or digits?
+  - Wrong question. The answer to the question as asked is obviously "not yet".
+    The real question is, should we reserve characters that are logically for
+    PoI to mean "also a PoI, but not passable"? For example, reserve capital
+    letters or digits?
   - I guess not. Capital letters would be weird. Digits less so, but I don't
     really like it either. Let's just say we'll hide this information in the
     names, much like the name/dest separation for portals.
@@ -191,6 +192,219 @@ Basic plan:
   - Suite is ready! Can now use it for pathfinding.
 """
 
-# This is still in the planning stages.
-NotImplemented
+import re
+
+# Regular expressions for the various symbols you can use in the "picture" part
+# of a map description. These are only permitted to match single characters;
+# else the alignment of the picture will get messed up. Basically each one
+# needs to either be a single (possibly-escaped) character, or else a character
+# class. Also, it is assumed that no two of them will ever match the _same_
+# character.
+RE_ANNOT_START  = re.compile("\[")       # Start of annotation
+RE_ANNOT_END    = re.compile("\]")       # End of annotation
+    # The RE_ANNOT_START and RE_ANNOT_END characters nest like parentheses. So
+    # for example, "[foo [bar]] [baz]" has 2 annotations, not 3.
+RE_WALL         = re.compile("[-+|#]")   # Impassable square
+RE_FLOOR        = re.compile("[. ]")     # Passable square
+RE_POINT_OF_INT = re.compile("[a-zA-Z]")
+    # Point of interest. Must have a corresponding annotation giving its name.
+RE_UNKNOWN      = re.compile("\?")
+    # Don't have a good way to represent this square; avoid stepping on it.
+    # (This is treated the same as a wall by pathfinding, but conceptually it's
+    # different.)
+RE_PORTAL_APPLY = re.compile("[><]")     # Portal, apply to use
+RE_PORTAL_STEP  = re.compile("\^")       # Portal, activated by stepping on it
+RE_CUSTOM_ENDPT = re.compile("!")
+    # Endpoint of a custom-defined path. (Not implemented yet.)
+
+# Take in a ClientInterfacer so we can report errors.
+# TODO: Passing a ClientInterfacer around just for error reporting seems like
+# an annoying way to do things; can we avoid this somehow?
+#   - Maybe just make it global? But Python _really_ doesn't like globals...
+def parseMap(desc, cf):
+    rooms = {}
+
+    roomName  = None
+    roomLines = []
+
+    def makeRoomForPrevLines():
+        if roomLines:
+            newRoom = parseRoom(roomName, roomLines, cf)
+            if newRoom is not None:
+                rooms[roomName] = newRoom
+        elif roomName is not None:
+            cf.logError("No map given for room %s" % roomName)
+
+    # Read through all the lines of the description and parse them into rooms.
+    for line in desc.split("\n"):
+        if not line.strip():
+            # Lines that are empty (except for whitespace) mark the end of a
+            # previous Room. Such lines at the start or end of the map are
+            # ignored.
+            roomName  = None
+            roomLines = []
+            makeRoomForPrevLines()
+        if roomName is None:
+            # First nonblank line either at the start of the desc or after a
+            # blank line -- this is the name of the next room.
+            roomName = line.strip()
+        else:
+            # If we already have a roomName, then this is a line from the main
+            # room description. Just add it to the list; we'll handle parsing
+            # these in parseRoom. In this case do _not_ strip() the line,
+            # because column alignment is important when parsing the picture.
+            roomLines.append(line)
+    makeRoomForPrevLines()
+
+    # TODO: Link rooms.
+    NotImplemented
+
+def parseRoom(name, lines, cf):
+    assert len(lines) > 0
+
+    # A typical line looks something like:
+    #     | p >  | [point-of-interest] [staircase-destination]
+    # Split off the part of each line that's the "picture" ("| p >  |") from
+    # the annotations listed afterward ("[point-of-interest]
+    # [staircase-destination]").
+    pictureRows = []
+    annotations = []
+    for line in lines:
+        firstAnnot = RE_ANNOT_START.search(line)
+        if firstAnnot is not None:
+            startOfAnnot = firstAnnot.start()
+            pictureRows.append(line[:startOfAnnot])
+            annotations.append(line[startOfAnnot:])
+        else:
+            pictureRows.append(line)
+            annotations.append("")
+
+    assert len(pictureRows) == len(annotations) == len(lines) > 0
+    height = len(pictureRows)
+
+    # TODO BOOKMARK: Split out the annotations for each row into a list.
+
+    # Strip whitespace from the _right_ side of each row of the picture without
+    # regard for alignment. Jagged trailing whitespace won't affect the
+    # appearance of the main picture, so doesn't matter. For example, the
+    # "picture" portion of this:
+    #     +---+   [annotation]
+    #     |   |[annotation]
+    #     |   |                          [annotation]
+    #     +---+ [annotation]
+    # still looks like a rectangle.
+    for i in range(len(pictureRows)):
+        pictureRows[i] = pictureRows[i].rstrip()
+
+    # On the left side, allow all rows to start with the same prefix consisting
+    # of only spaces and (horizontal) tabs; strip off that prefix. However,
+    # require that after that prefix, each row start with a non-whitespace
+    # character. So it's valid to write something like:
+    #     +---+
+    #     |...|
+    #     ....|
+    #     +---+
+    # or:
+    #     +---+
+    #     |   |
+    #     .   |
+    #     +---+
+    # but not:
+    #     +---+
+    #     |   |
+    #         |
+    #     +---+
+    # Do _not_ strip off any other types of whitespace from the left (ex:
+    # vertical tab), since they may have weirder effects on alignment.
+    commonPrefix = ""
+    for c in pictureRows[0]:
+        if c in (" ", "\t"):
+            commonPrefix += c
+        else:
+            break
+    for i in range(len(pictureRows)):
+        if pictureRows[i].startswith(commonPrefix):
+            # Strip common prefix
+            pictureRows[i] = pictureRows[i][len(commonPrefix):]
+        else:
+            # Didn't have that prefix
+            cf.logError("Error parsing %s: every row must start with " \
+                "the same whitespace." % name)
+            return None
+        if len(picture_rows[i]) == 0:
+            # Nothing left after prefix
+            cf.logError("Error parsing %s: empty row in picture." % name)
+            return None
+        if picture_rows[i][0].isspace():
+            # More space left after prefix
+            if picture_rows[i][0] in (" ", "\t"):
+                cf.logError("Error parsing %s: every row must start with " \
+                    "the same whitespace." % name)
+            else:
+                cf.logError("Error parsing %s: invalid whitespace at start " \
+                    "of row: %r." % (name, picture_rows[i][0]))
+            return None
+
+    # Now check that every row has the same width. Note that since we've
+    # stripped out trailing whitespace, the following is invalid:
+    #     +---+
+    #     |   |
+    #     |    
+    #     +---+
+    # and must instead be written as (for example):
+    #     +---+
+    #     |   |
+    #     |   .
+    #     +---+
+    width = len(pictureRows[0])
+    for row in pictureRows:
+        if len(row) != width:
+            cf.logError("Error parsing %s: map is not rectangular. (Note: " \
+                "trailing whitespace doesn't count.)" % name)
+            return None
+
+    # At this point, the picture is known to be rectangular (of size at least
+    # 1x1), with non-whitespace characters on the far left and far right of
+    # each row. Assert all of this here.
+    assert len(pictureRows) == height > 0
+    for row in pictureRows:
+        assert len(row) == width > 0
+        assert not row[ 0].isspace()
+        assert not row[-1].isspace()
+
+    # "You're tearing me apart, Lisa!"
+    theRoom = Room(name, width, height)
+    for y in range(height):
+        for x in range(width):
+            c = pictureRows[y][x]
+            if RE_WALL.match(c):
+                theRoom[x, y] = Room.WALL
+            elif RE_FLOOR.match(c):
+                theRoom[x, y] = Room.FLOOR
+            elif RE_POINT_OF_INT.match(c):
+                theRoom[x, y] = Room.FLOOR
+                # TODO BOOKMARK: Need to check the annotations.
+                # theRoom.addPointOfInterest(...)
+                NotImplemented
+            elif RE_UNKNOWN.match(c):
+                theRoom[x, y] = Room.UNKNOWN
+            elif RE_PORTAL_APPLY.match(c):
+                theRoom[x, y] = Room.PORTAL_APPLY
+                # TODO BOOKMARK: Need to check the annotations.
+                # theRoom.setPortalDest(...)
+                NotImplemented
+            elif RE_PORTAL_STEP.match(c):
+                theRoom[x, y] = Room.PORTAL_STEP
+                # TODO BOOKMARK: Need to check the annotations.
+                # theRoom.setPortalDest(...)
+                NotImplemented
+            elif RE_CUSTOM_ENDPT.match(c):
+                cf.logError("Custom paths not implemented yet.")
+                return None
+
+    # TODO: Is there anything else left here?
+    NotImplemented
+    return theRoom
+
+# TODO: Implement Room class.
 
