@@ -508,5 +508,45 @@ def addPortalToRoom(theRoom, annot, x, y):
     assert dest is not None
     theRoom.setPortalDestName(x, y, dest)
 
+
+
 # FIXME 1: Implement Room class.
+
+class Room:
+    def __init__(self, name, width, height):
+        self.name   = name
+        self.width  = width
+        self.height = height
+
+        # self._tiles = <TODO>
+
+
+
+# To find a path, we need 2 things:
+#   - A function that gets the neighbors of a cell
+#   - A heuristic function that (under)estimates distances between arbitrary
+#     cells.
+# Technically we only _need_ the first one, since h(x) = 0 is a valid (if
+# useless) heuristic function.
+
+def getNeighbors(pos):
+    WALK_COST   = 1
+    PORTAL_COST = 4
+
+    theRoom, x, y = pos
+    for dy in [-1, 0, 1]:
+        for dx in [-1, 0, 1]:
+            if dx == dy == 0:
+                continue
+            x2 = x + dx
+            y2 = y + dy
+            if theRoom.hasStepPortal(x2, y2):
+                yield (theRoom.getPortalDest(x2, y2), (dx, dy), PORTAL_COST)
+            elif theRoom.isPassable(x2, y2)
+                yield ((x2, y2), (dx, dy), WALK_COST)
+    if theRoom.hasApplyPortal(x, y):
+        yield (theRoom.getPortalDest(x, y), "apply", PORTAL_COST)
+
+# Heuristic: see
+#     https://stackoverflow.com/a/14428389
 
