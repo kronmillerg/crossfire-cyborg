@@ -638,6 +638,8 @@ class ClientInterfacer(object):
         """
 
         if item.locked:
+            # TODO maybe this should just be a warning and then we refuse to
+            # move the item?
             self.fatal("Attempt to move locked item %s <tag=%s>." %
                 (item.name, item.tag))
             return None
