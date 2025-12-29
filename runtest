@@ -3,6 +3,5 @@
 module="$1"
 shift
 
-#python3 -m "test.$module" "$@"
-python3 -u -m "test.$module" "$@"
+python3 -m "test.$module" "$@"
 

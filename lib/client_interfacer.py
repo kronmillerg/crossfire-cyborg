@@ -10,6 +10,8 @@ import platform
 import select
 import sys
 
+from lib import input_handler
+
 DEBUG = False
 
 
@@ -46,7 +48,7 @@ class Color:
     DEFAULT = NAVY
 
 
-class ClientInterfacer(object):
+class ClientInterfacer:
     """
     Class responsible for maintaining some basic state and handling all direct
     communications with the client.
@@ -70,49 +72,11 @@ class ClientInterfacer(object):
     _numCreated = 0
 
     def __init__(self, targetPendingCommands=6):
-        super(ClientInterfacer, self).__init__()
-
-        # We use select() for non-blocking reads from stdin, which won't work
-        # on Windows. I have no idea about Macs, but I'm not likely to try to
-        # run this on a Mac so let's just be conservative about the check. If
-        # we're not on Linux, give up now rather than run into cryptic errors
-        # later.
-        if platform.system() != "Linux":
-            raise NotImplementedError("ClientInterfacer only implemented for "
-                "Linux.")
-
         self.__class__._numCreated += 1
         if self.__class__._numCreated > 1:
             raise RuntimeError("Cannot create more than 1 ClientInterfacer.")
 
-        # Disable buffering for sys.stdin.
-        #
-        # This is necessary because apparently, select on stdin returns False
-        # if there is input but it's all buffered by Python. I'd guess Python's
-        # select is just a thin wrapper around the real select(), which knows
-        # if the pipe has data in it, but not if Python has read that data out
-        # of the pipe into its own buffer. So without this line, the script can
-        # hang because there's input waiting for it but it doesn't know about
-        # that input. (If more input comes in, that can trigger the select and
-        # unblock the script, but that can take indefinitely long).
-        #
-        # To see this happen in practice, try commenting out this line and
-        # running print_inv.py.
-        #
-        # Thanks to:
-        #     https://stackoverflow.com/q/33305131
-        #     https://stackoverflow.com/a/3670470
-        # for the fix.
-        #
-        # TODO: This doesn't work in py3. Could open it in binary mode instead,
-        # but trying '-u' instead for now...
-        #   - Update: "rb" doesn't easily work, would have to deal with bin vs.
-        #     str issues everywhere else in the code
-        # TODO not convinced '-u' works reliably. Further testing is needed. I
-        # might have to bite the bullet and implement a worker thread for
-        # blocking reads from stdin. Would probably need that on Windows
-        # anyway...
-        #sys.stdin = os.fdopen(sys.stdin.fileno(), "r", 0)
+        self.inputHandler = input_handler.InputHandler()
 
         # This one is considered part of the public API. If it needs to be
         # calculated, I'll @property it.
@@ -688,8 +652,10 @@ class ClientInterfacer(object):
         # to insulate the user from any concerns about
         # _canWaitOnPendingCommands().
         self._ensureCanWaitOnPendingCommands()
-        self._waitForClientInput(timeout=timeout)
-        self._handlePendingClientInputs()
+        line = self.inputHandler.waitForInput(timeout=timeout)
+        if line is not None:
+            self._handleClientInput(line)
+            self._handlePendingClientInputs()
         self._checkInvariants()
 
     def pumpEvents(self):
@@ -905,13 +871,10 @@ class ClientInterfacer(object):
         arrived-but-unprocessed inputs from the client.
         """
 
-        # If there's something already buffered, then that's an unhandled
-        # input. In this case don't check stdin, because that's needlessly
-        # slow.
+        # Skip checking stdin if we already know the queue is nonempty.
         if len(queue) > 0:
             return True
 
-        # Otherwise, we need to check what's on stdin to determine the answer.
         self._handlePendingClientInputs()
         return len(queue) > 0
 
@@ -940,8 +903,11 @@ class ClientInterfacer(object):
         block.
         """
 
-        while self._checkForClientInput():
-            self._handleClientInput(self._readLineFromClient())
+        while True:
+            line = self.inputHandler.checkForInput()
+            if line is None:
+                break
+            self._handleClientInput(line)
 
     def _handleClientInput(self, msg):
         """
@@ -1212,50 +1178,6 @@ class ClientInterfacer(object):
     ########################################################################
     # Internal helpers -- direct client access
 
-    def _checkForClientInput(self):
-        # NOTE! It's assumed in many places that the following sequence:
-        #     if self._checkForClientInput():
-        #         self._readLineFromClient()
-        # will not block. I'm pretty sure this assumption is wrong, at least in
-        # theory. If there's data on stdin but not a newline, then I think the
-        # readLine will block. This probably won't happen in practice since the
-        # client should only be sending us whole lines. But in theory a better
-        # implementation would probably be to have our own buffer in which we
-        # could store a partial input line. Then _checkForClientInput could
-        # first select(), then if stdin is ready to read it could also do
-        # (Python's equivalent of) a raw read() on the fd into our buffer. If
-        # there's a newline in that string, then throw it into an "unhandled
-        # input lines" queue and return True. Else leave it in the buffer and
-        # return False.
-        #
-        # It doesn't seem worth implementing this until/unless it actually
-        # becomes a problem.
-
-        # https://docs.python.org/2/library/select.html#select.select
-        rlist, _wlist, _xlist = select.select([sys.stdin], [], [], 0)
-        return len(rlist) > 0
-
-    def _waitForClientInput(self, timeout=None):
-        """
-        Wait up to timeout seconds (or indefinitely if timeout is None) for
-        input from the client. Return True if there is input ready afte
-        waiting.
-        """
-
-        if timeout is not None:
-            rlist, _wlist, _xlist = select.select([sys.stdin], [], [], timeout)
-        else:
-            rlist, _wlist, _xlist = select.select([sys.stdin], [], [])
-            if not rlist:
-                self._logWarning("Waited indefinitely for input but there's "
-                    "still no input.")
-        return len(rlist) > 0
-
-    def _readLineFromClient(self):
-        ret = chompSuffix(sys.stdin.readline())
-        self._debug("In:  " + ret)
-        return ret
-
     def _sendToClient(self, msg):
         msg = str(msg)
         sys.stdout.write(msg + "\n")
@@ -1509,12 +1431,6 @@ def checkPrefix(s, prefix):
         return (True, s[len(prefix):])
     else:
         return (False, s)
-
-def chompSuffix(s, suffix="\n"):
-    if s.endswith(suffix):
-        return s[:-len(suffix)]
-    else:
-        return s
 
 def chompPrefix(s, prefix):
     if s.startswith(prefix):
