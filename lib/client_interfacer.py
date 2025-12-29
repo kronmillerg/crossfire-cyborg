@@ -103,7 +103,16 @@ class ClientInterfacer(object):
         #     https://stackoverflow.com/q/33305131
         #     https://stackoverflow.com/a/3670470
         # for the fix.
-        sys.stdin = os.fdopen(sys.stdin.fileno(), "r", 0)
+        #
+        # TODO: This doesn't work in py3. Could open it in binary mode instead,
+        # but trying '-u' instead for now...
+        #   - Update: "rb" doesn't easily work, would have to deal with bin vs.
+        #     str issues everywhere else in the code
+        # TODO not convinced '-u' works reliably. Further testing is needed. I
+        # might have to bite the bullet and implement a worker thread for
+        # blocking reads from stdin. Would probably need that on Windows
+        # anyway...
+        #sys.stdin = os.fdopen(sys.stdin.fileno(), "r", 0)
 
         # This one is considered part of the public API. If it needs to be
         # calculated, I'll @property it.

@@ -64,13 +64,13 @@ def gettodest(graph, walks, src, dest):
 
 def loadwalk(fpath):
     walk = []
-    with file(fpath, "r") as f:
+    with open(fpath, "r") as f:
         for line in f:
             walk.append(line.strip())
     return walk
 
 def savewalk(fpath, walk):
-    with file(fpath, "w") as f:
+    with open(fpath, "w") as f:
         for step in walk:
             f.write(step + "\n")
 
@@ -140,19 +140,7 @@ def buildgraph(server):
 # Graph and related classes
 # (used for shortest-path calculations)
 
-class Infinity:
-    def __init__(self):
-        pass
-    def __cmp__(self, other):
-        if other is self:
-            return 0
-        return 1
-    def __add__(self, other):
-        return self
-    def __radd(self, other):
-        return self
-
-INFINITY = Infinity()
+INFINITY = float("inf")
 
 class Path:
     def __init__(self, g, first):
