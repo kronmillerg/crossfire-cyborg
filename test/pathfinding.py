@@ -5,7 +5,7 @@ Copyright (c) 2025 Greg Kronmiller
 import time
 
 from lib.client_interfacer import ClientInterfacer
-from lib.nav import Navigator, Suite, parseRoom, Direction
+from lib.geography import Navigator, Suite, parseRoom, Direction
 
 cf = ClientInterfacer()
 
@@ -108,8 +108,6 @@ for i in range(4):
 
 ### Now walk to a few specific points to show we can pathfind.
 
-# TODO: Either find a different short name for "the Navigator" or else rename
-# the 'nav' module. Maybe take over geography.py?
 nav = Navigator(cf, scornApartment, startPos=mainFloor["P1"])
 
 def pauseAtPoint(msg):
